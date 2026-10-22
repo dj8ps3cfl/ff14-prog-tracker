@@ -21,6 +21,28 @@ node scripts/probe.mjs report <code>            # 單一 report 的每場 fight
 node scripts/probe.mjs player <角色名> <伺服器>   # 在近期 reports 裡找某角色的進度
 ```
 
+## 掃描
+
+```bash
+npm run scan                                    # 掃描最近 72 小時（排程每 30 分鐘跑這個）
+npm run backfill -- --since 2026-07-28          # 往回補歷史，額度用完就停，下次接著補
+node scripts/scan.mjs --max-points 200          # 限制這次最多用多少點
+```
+
+要追蹤的副本、掃描範圍、每次的點數上限都在 `config/tracked.json`。
+
+產生的資料都在 `data/`：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `index.json` | 所有玩家的摘要（每個副本的最佳進度、場數），給搜尋用 |
+| `players/<伺服器>/<角色名>.json` | 單一玩家：每個副本的場數、最佳進度、首次通關、每日進度、職業 |
+| `encounters.json` | 追蹤中的副本清單 |
+| `state.json` | 已掃描的 report、補歷史的進度 |
+| `fights.json` | 去重紀錄：同一場戰鬥被多個隊員上傳時只算一次 |
+
+`.github/workflows/scan.yml` 會每 30 分鐘跑一次掃描，並把 `data/` 的變動 commit 回 repo。需要在 repo 的 Secrets 設定 `FFLOGS_CLIENT_ID` 和 `FFLOGS_CLIENT_SECRET`。
+
 ## 實測發現（2026-10-22）
 
 - FFLogs **沒有繁中區**，也沒有繁中伺服器 / 角色資料，`characterData.character` 查不到繁中角色。

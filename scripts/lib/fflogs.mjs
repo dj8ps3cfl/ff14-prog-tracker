@@ -70,7 +70,9 @@ export async function getToken({ forceRefresh = false } = {}) {
   return { ...token, fromCache: false };
 }
 
-export async function gql(query, variables = {}) {
+// partial: true 時不因部分錯誤丟例外（例如合併查詢裡有一份 report 變成 private），
+// 改回傳 { data, errors }
+export async function gql(query, variables = {}, { partial = false } = {}) {
   let token = await getToken();
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(API_URL, {
@@ -92,11 +94,19 @@ export async function gql(query, variables = {}) {
       throw new Error(`GraphQL 請求失敗（HTTP ${res.status}）：${text.slice(0, 300)}`);
     }
     const json = JSON.parse(text);
+    if (partial && json.data) return { data: json.data, errors: json.errors ?? [] };
     if (json.errors?.length) {
       throw new Error('GraphQL 錯誤：' + json.errors.map((e) => e.message).join('；'));
     }
     return json.data;
   }
+}
+
+export async function getRateLimit() {
+  const { rateLimitData } = await gql(
+    '{ rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn } }'
+  );
+  return rateLimitData;
 }
 
 export function fightUrl(code, fightId, type = 'deaths') {

@@ -8,6 +8,8 @@
     "node": ">=20.12"
   },
   "scripts": {
-    "probe": "node scripts/probe.mjs"
+    "probe": "node scripts/probe.mjs",
+    "scan": "node scripts/scan.mjs",
+    "backfill": "node scripts/scan.mjs backfill"
   }
 }
