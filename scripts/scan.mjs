@@ -255,9 +255,9 @@ async function save(candidates, scanned, known, ctx) {
   const statRows = [...stats.values()].map((s) => [s.playerId, s.encounter, s.pulls, s.kills, s.first, s.last,
     s.bestRank, s.bestPull, s.firstKill, s.firstKillAt]);
 
+  // 把 report 標成已掃描放在最後：萬一中途失敗，下次還會重掃
   await executeStatements([
     ...insertStatements('INSERT INTO players (id, name, server)', created),
-    ...insertStatements('INSERT INTO reports (id, code, start_time, end_time, scanned_at)', newReports),
     ...insertStatements(
       'INSERT INTO pulls (id, report_id, fight, encounter, start_time, duration, kill, phase, boss, pct, party)',
       pullRows
@@ -268,6 +268,7 @@ async function save(candidates, scanned, known, ctx) {
       statRows,
       STATS_UPSERT
     ),
+    ...insertStatements('INSERT INTO reports (id, code, start_time, end_time, scanned_at)', newReports),
     ...updatedReports,
   ]);
   ctx.stats.newPlayers += created.length;

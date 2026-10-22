@@ -16,6 +16,8 @@ export const DATABASE = 'ff14-prog';
 const MAX_COMMAND_LENGTH = 20_000;
 // D1 單一 SQL 敘述上限 100KB，批次寫入時切得比這小
 const MAX_STATEMENT_LENGTH = 80_000;
+// 一個 INSERT 列數太多 D1 會回 SQLITE_NOMEM（實測 2000 列可以、6000 列失敗）
+const MAX_ROWS_PER_STATEMENT = 500;
 
 async function wrangler(args) {
   try {
@@ -25,7 +27,9 @@ async function wrangler(args) {
     });
     return stdout;
   } catch (err) {
-    const detail = (err.stderr || err.stdout || err.message).trim().split('\n').slice(-5).join('\n');
+    const lines = (err.stderr || err.stdout || err.message).replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+    const errors = lines.filter((l) => /ERROR|✘/.test(l));
+    const detail = (errors.length ? errors : lines.slice(-5)).map((l) => l.trim()).filter(Boolean).join('\n');
     throw new Error(`wrangler ${args.slice(0, 2).join(' ')} 失敗：\n${detail}`);
   }
 }
@@ -76,7 +80,7 @@ export function insertStatements(prefix, rows, suffix = '') {
   let length = prefix.length + suffix.length;
   for (const row of rows) {
     const tuple = `(${row.map(sqlValue).join(',')})`;
-    if (values.length && length + tuple.length > MAX_STATEMENT_LENGTH) {
+    if (values.length && (length + tuple.length > MAX_STATEMENT_LENGTH || values.length >= MAX_ROWS_PER_STATEMENT)) {
       statements.push(`${prefix} VALUES ${values.join(',')} ${suffix};`);
       values = [];
       length = prefix.length + suffix.length;
