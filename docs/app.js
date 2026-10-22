@@ -151,7 +151,9 @@ function resultItem(p) {
     .map((e) => {
       const s = byId.get(e.id);
       const kill = s.kills > 0;
-      return `<span class="chip ${kill ? 'kill' : ''}">${escapeHtml(shortName(e))} ${kill ? '通關' : `剩 ${fmtPct(s.bestPct)}`}</span>`;
+      // bestPct 是整場戰鬥還剩多少（不是 Boss 血量），換成「打了多少」跟進度條一致
+      const label = kill ? '通關' : `進度 ${Math.floor(100 - s.bestPct)}%`;
+      return `<span class="chip ${kill ? 'kill' : ''}">${escapeHtml(shortName(e))} ${label}</span>`;
     })
     .join('');
   return `
@@ -226,7 +228,7 @@ function encounterCard(e, playerId) {
         <h3>${escapeHtml(e.name ?? `副本 ${e.id}`)}</h3>
         <span class="status ${kill ? 'kill' : ''}">${escapeHtml(progressLabel(best))}</span>
       </div>
-      <div class="bar ${kill ? 'kill' : ''}" role="img" aria-label="進度 ${progressWidth(best).toFixed(0)}%">
+      <div class="bar ${kill ? 'kill' : ''}" role="img" aria-label="進度 ${progressWidth(best).toFixed(0)}%" title="整場戰鬥進度 ${progressWidth(best).toFixed(0)}%">
         <span style="width:${progressWidth(best)}%"></span>
       </div>
       <dl class="facts">
