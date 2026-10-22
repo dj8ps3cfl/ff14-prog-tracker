@@ -1,0 +1,13 @@
+{
+  "name": "ff14-prog-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "追蹤繁中服 FF14 高難副本開荒進度（含未通關紀錄），資料來自 FFLogs API v2",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "probe": "node scripts/probe.mjs"
+  }
+}
