@@ -1,8 +1,7 @@
 name: Scan FFLogs
 
+#  GitHub 自己的 schedule 不準時，改由 Cloudflare Worker 的 Cron Trigger 每 30 分鐘呼叫 workflow_dispatch
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 # 同一時間只能有一個掃描：新資料的 id 是掃描程式自己配的

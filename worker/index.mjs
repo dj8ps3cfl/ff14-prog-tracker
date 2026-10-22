@@ -1,4 +1,5 @@
-// 查詢用的 API：網頁從這裡讀 D1 的資料。全部唯讀，回應會快取 30 分鐘
+// 查詢用的 API：網頁從這裡讀 D1 的資料。全部唯讀，回應會快取 30 分鐘。
+// 另外也負責每 30 分鐘觸發 GitHub Actions 的掃描（見 triggerScan）
 //
 //   GET /encounters                       追蹤中的副本清單
 //   GET /search?q=<名字開頭>                搜尋角色（最多 20 筆）
@@ -192,7 +193,34 @@ const ROUTES = {
   '/pulls': pulls,
 };
 
+// GitHub 自己的排程不準時（新 repo 常常完全不觸發），改由 Cloudflare Cron Trigger 每 30 分鐘
+// 呼叫 GitHub API 觸發掃描。GITHUB_TOKEN 是只有這個 repo「Actions: Read and write」權限的 token
+const SCAN_WORKFLOW_URL =
+  'https://api.github.com/repos/dj8ps3cfl/ff14-prog-tracker/actions/workflows/scan.yml/dispatches';
+
+async function triggerScan(env) {
+  if (!env.GITHUB_TOKEN) {
+    console.error('沒有設定 GITHUB_TOKEN，無法觸發掃描');
+    return;
+  }
+  const res = await fetch(SCAN_WORKFLOW_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'ff14-prog-api',
+    },
+    body: JSON.stringify({ ref: 'master' }),
+  });
+  if (res.status !== 204) console.error(`觸發掃描失敗：HTTP ${res.status} ${await res.text()}`);
+}
+
 export default {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(triggerScan(env));
+  },
+
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
       return new Response(null, {

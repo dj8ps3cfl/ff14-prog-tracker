@@ -3,6 +3,10 @@
   "name": "ff14-prog-api",
   "main": "worker/index.mjs",
   "compatibility_date": "2026-09-01",
+  // 每 30 分鐘觸發 GitHub Actions 的掃描（worker/index.mjs 的 scheduled）
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
   "d1_databases": [
     {
       "binding": "DB",
