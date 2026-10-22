@@ -3,8 +3,8 @@
 //   GET /encounters                       追蹤中的副本清單
 //   GET /search?q=<名字開頭>                搜尋角色（最多 20 筆）
 //   GET /player?name=<角色名>&server=<伺服器>  角色的各副本進度與每日進度
-//   GET /pulls?player=<id>&encounter=<id>[&before=<pull id>]
-//                                         角色在某副本的每一場 pull，新到舊，每頁 100 筆
+//   GET /pulls?player=<id>&encounter=<id>[&before=<上一頁的 next>]
+//                                         角色在某副本的每一場 pull，依開打時間新到舊，每頁 100 筆
 import config from '../config/tracked.json';
 import { jobName, serverCode, serverName } from '../shared/codes.mjs';
 
@@ -137,22 +137,27 @@ async function player(db, params) {
 async function pulls(db, params) {
   const playerId = Number(params.get('player'));
   const encounter = Number(params.get('encounter'));
-  const before = Number(params.get('before') ?? Number.MAX_SAFE_INTEGER);
   if (!playerId || !encounter) return json({ error: '需要 player 和 encounter' }, 400);
+  // 分頁游標是上一頁最後一筆的「開打時間:pull id」，同一秒開打的也不會漏掉
+  const [beforeTime, beforeId] = (params.get('before') ?? '').split(':').map(Number);
+  const cursorTime = beforeTime || Number.MAX_SAFE_INTEGER;
+  const cursorId = beforeId || Number.MAX_SAFE_INTEGER;
   const { results } = await db
     .prepare(`
       SELECT u.id, u.kill, u.phase, u.boss, u.pct, u.start_time, u.duration, u.fight, r.code, pp.job
       FROM pull_players pp
       JOIN pulls u ON u.id = pp.pull_id
       JOIN reports r ON r.id = u.report_id
-      WHERE pp.player_id = ?1 AND pp.pull_id < ?2 AND u.encounter = ?3
-      ORDER BY pp.pull_id DESC
-      LIMIT ?4`)
-    .bind(playerId, before, encounter, PAGE_SIZE)
+      WHERE pp.player_id = ?1 AND u.encounter = ?2
+        AND (u.start_time < ?3 OR (u.start_time = ?3 AND u.id < ?4))
+      ORDER BY u.start_time DESC, u.id DESC
+      LIMIT ?5`)
+    .bind(playerId, encounter, cursorTime, cursorId, PAGE_SIZE)
     .all();
+  const last = results.at(-1);
   return json({
     pulls: results.map((r) => ({ id: r.id, ...pullView(r) })),
-    next: results.length === PAGE_SIZE ? results.at(-1).id : null,
+    next: results.length === PAGE_SIZE ? `${last.start_time}:${last.id}` : null,
   });
 }
 
@@ -176,8 +181,9 @@ export default {
     const handler = ROUTES[url.pathname];
     if (!handler) return json({ error: '沒有這個路徑' }, 404);
 
-    const cache = caches.default;
-    const cached = await cache.match(request);
+    // 本機開發（npm run dev 會帶 NO_CACHE）時不快取，改了程式馬上看得到
+    const cache = env.NO_CACHE ? null : caches.default;
+    const cached = await cache?.match(request);
     if (cached) return cached;
 
     let response;
@@ -187,7 +193,7 @@ export default {
       console.error(err);
       return json({ error: '伺服器錯誤' }, 500);
     }
-    if (response.status === 200) ctx.waitUntil(cache.put(request, response.clone()));
+    if (cache && response.status === 200) ctx.waitUntil(cache.put(request, response.clone()));
     return response;
   },
 };

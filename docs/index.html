@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>開荒進度 | FFXIV 繁中服</title>
+    <meta name="description" content="查詢繁中服 FF14 角色在零式、絕本的開荒進度，包含未通關的紀錄，並連到 FFLogs 看死亡紀錄。" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="#/">開荒進度<span class="brand-sub">FFXIV 繁中服</span></a>
+        <form class="header-search" id="header-search" role="search">
+          <input type="search" name="q" placeholder="搜尋角色名" autocomplete="off" aria-label="搜尋角色名" />
+        </form>
+      </div>
+    </header>
+
+    <main class="wrap" id="app" aria-live="polite"></main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p>資料來自 FFLogs 公開的 report，每 30 分鐘更新。只收錄繁中服玩家；設成 private 的 report 不會出現。</p>
+        <p>本網站為非官方社群工具，與 SQUARE ENIX CO., LTD. 及 FFLogs 無從屬或背書關係。</p>
+      </div>
+    </footer>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

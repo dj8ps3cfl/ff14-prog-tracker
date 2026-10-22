@@ -8,6 +8,7 @@
     "node": ">=20.12"
   },
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "probe": "node scripts/probe.mjs",
     "scan": "node scripts/scan.mjs",
     "backfill": "node scripts/scan.mjs backfill"
