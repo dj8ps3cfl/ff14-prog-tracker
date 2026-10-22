@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ff14-prog-api",
+  "main": "worker/index.mjs",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ff14-prog",
+      "database_id": "885ec175-4fbe-4bd0-bad7-04bb718347d4",
+      "migrations_dir": "db/migrations"
+    }
+  ]
+}

@@ -6,10 +6,12 @@
 
 ## 設定
 
-需要 Node.js 20.12 以上，不用安裝任何套件。
+需要 Node.js 20.12 以上。
 
-1. 到 <https://www.fflogs.com/api/clients/> 建立 client（**不要**勾 Public Client，Redirect URL 填 `http://localhost` 即可）
-2. 把 `.env.example` 複製成 `.env`，填入 Client ID 和 Secret
+1. `npm install`
+2. 到 <https://www.fflogs.com/api/clients/> 建立 client（**不要**勾 Public Client，Redirect URL 填 `http://localhost` 即可）
+3. 把 `.env.example` 複製成 `.env`，填入 Client ID 和 Secret
+4. `npx wrangler login`，登入 Cloudflare（掃描程式和 Worker 都透過 wrangler 存取 D1）
 
 ## 實測腳本
 
@@ -29,19 +31,40 @@ npm run backfill -- --since 2026-07-28          # 往回補歷史，額度用完
 node scripts/scan.mjs --max-points 200          # 限制這次最多用多少點
 ```
 
-要追蹤的副本、掃描範圍、每次的點數上限都在 `config/tracked.json`。
+要追蹤的副本、掃描範圍、每次的點數上限都在 `config/tracked.json`。同一時間只能有一個掃描在跑（新資料的 id 是掃描程式自己配的），GitHub 上的排程在跑時不要在本機跑 `scan`。
 
-產生的資料都在 `data/`：
+`.github/workflows/scan.yml` 每 30 分鐘跑一次掃描。repo 的 Secrets 需要：`FFLOGS_CLIENT_ID`、`FFLOGS_CLIENT_SECRET`、`CLOUDFLARE_API_TOKEN`（權限只要 Account → D1 → Edit）、`CLOUDFLARE_ACCOUNT_ID`。
 
-| 檔案 | 內容 |
+## 資料庫（Cloudflare D1）
+
+資料表定義在 `db/migrations/`，變更後用 `npx wrangler d1 migrations apply ff14-prog --remote` 套用。為了省空間，存進資料庫前會先處理：
+
+- 角色名、report code 都換成整數 id，只在 `players`、`reports` 存一次
+- 時間存 Unix 秒數；Boss 血量、fightPercentage 乘以 100 存成整數
+- 伺服器、職業存成代碼（對照表在 `shared/codes.mjs`，只能往後加）
+- 同一場戰鬥被多個隊員上傳時只存一次（用隊伍成員雜湊 + 開打時間判斷）
+- 只存繁中玩家，LimitBreak 之類的假玩家和雜魚戰都不存
+
+| 資料表 | 內容 |
 | --- | --- |
-| `index.json` | 所有玩家的摘要（每個副本的最佳進度、場數），給搜尋用 |
-| `players/<伺服器>/<角色名>.json` | 單一玩家：每個副本的場數、最佳進度、首次通關、每日進度、職業 |
-| `encounters.json` | 追蹤中的副本清單 |
-| `state.json` | 已掃描的 report、補歷史的進度 |
-| `fights.json` | 去重紀錄：同一場戰鬥被多個隊員上傳時只算一次 |
+| `pulls` | 每一場 pull（含滅團）：副本、時間、是否通關、階段、Boss 血量 |
+| `pull_players` | 誰打了哪一場、用什麼職業 |
+| `player_stats` | 每個角色、每個副本的摘要：場數、最佳 pull、首次通關 |
+| `players` / `reports` | 角色、report 的 id 對照 |
+| `meta` | 補歷史的進度 |
 
-`.github/workflows/scan.yml` 會每 30 分鐘跑一次掃描，並把 `data/` 的變動 commit 回 repo。需要在 repo 的 Secrets 設定 `FFLOGS_CLIENT_ID` 和 `FFLOGS_CLIENT_SECRET`。
+## 查詢 API（Cloudflare Worker）
+
+`worker/index.mjs`，用 `npx wrangler deploy` 部署，回應會快取 30 分鐘。
+
+| 路徑 | 內容 |
+| --- | --- |
+| `GET /encounters` | 追蹤中的副本清單 |
+| `GET /search?q=<名字開頭>` | 搜尋角色 |
+| `GET /player?name=<角色名>&server=<伺服器>` | 角色的各副本最佳進度、首次通關、每日進度 |
+| `GET /pulls?player=<id>&encounter=<id>[&before=<pull id>]` | 角色在某副本的每一場 pull |
+
+本機測試：`npx wrangler d1 export ff14-prog --remote --output .cache/export.sql`、`npx wrangler d1 execute ff14-prog --local --file .cache/export.sql`，再 `npx wrangler dev`。
 
 ## 實測發現（2026-10-22）
 

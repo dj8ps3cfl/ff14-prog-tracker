@@ -11,5 +11,8 @@
     "probe": "node scripts/probe.mjs",
     "scan": "node scripts/scan.mjs",
     "backfill": "node scripts/scan.mjs backfill"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.3"
   }
 }
