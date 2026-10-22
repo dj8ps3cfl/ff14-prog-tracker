@@ -26,12 +26,18 @@ node scripts/probe.mjs player <角色名> <伺服器>   # 在近期 reports 裡�
 ## 掃描
 
 ```bash
-npm run scan                                    # 掃描最近 72 小時（排程每 30 分鐘跑這個）
-npm run backfill -- --since 2026-07-28          # 往回補歷史，額度用完就停，下次接著補
-node scripts/scan.mjs --max-points 200          # 限制這次最多用多少點
+npm run scan                                    # 掃描最近 72 小時
+npm run backfill                                # 往回補歷史到各 zone 的 backfillSince，額度用完就停，下次接著補
+node scripts/scan.mjs auto                      # 先掃最近的，剩下的額度補歷史（排程每 30 分鐘跑這個）
+node scripts/scan.mjs --max-points 200          # 限制這次最多用多少 FFLogs 點數
 ```
 
-要追蹤的副本、掃描範圍、每次的點數上限都在 `config/tracked.json`。同一時間只能有一個掃描在跑（新資料的 id 是掃描程式自己配的），GitHub 上的排程在跑時不要在本機跑 `scan`。
+要追蹤的副本、掃描範圍、補歷史到哪一天（`backfillSince`）、額度上限都在 `config/tracked.json`。補歷史照 zone 的順序一個補完才補下一個。
+
+掃描同時控制兩種額度：
+
+- **FFLogs**：每小時 1000 點，每次最多用 `maxPointsPerRun`，並保留 `reservePoints`。
+- **D1 寫入**：免費方案每天（UTC 00:00 重置）10 萬列。用 D1 回報的過去 24 小時寫入量和自己記在 `meta` 表的當日寫入量，取較大的那個計算。一般掃描最多用到 `dailyWriteLimit`，補歷史最多用到 `backfillWriteLimit`，保留空間給之後的一般掃描。同一時間只能有一個掃描在跑（新資料的 id 是掃描程式自己配的），GitHub 上的排程在跑時不要在本機跑 `scan`。
 
 `.github/workflows/scan.yml` 每 30 分鐘跑一次掃描。repo 的 Secrets 需要：`FFLOGS_CLIENT_ID`、`FFLOGS_CLIENT_SECRET`、`CLOUDFLARE_API_TOKEN`（權限只要 Account → D1 → Edit）、`CLOUDFLARE_ACCOUNT_ID`。
 
@@ -61,10 +67,22 @@ node scripts/scan.mjs --max-points 200          # 限制這次最多用多少點
 | --- | --- |
 | `GET /encounters` | 追蹤中的副本清單 |
 | `GET /search?q=<名字開頭>` | 搜尋角色 |
-| `GET /player?name=<角色名>&server=<伺服器>` | 角色的各副本最佳進度、首次通關、每日進度 |
-| `GET /pulls?player=<id>&encounter=<id>[&before=<pull id>]` | 角色在某副本的每一場 pull |
+| `GET /player?name=<角色名>&server=<伺服器>` | 角色的各副本最佳進度、首次通關、每日進度、每個 P 的到達次數 |
+| `GET /pulls?player=<id>&encounter=<id>[&before=<上一頁的 next>]` | 角色在某副本的每一場 pull，依時間新到舊 |
 
-本機測試：`npx wrangler d1 export ff14-prog --remote --output .cache/export.sql`、`npx wrangler d1 execute ff14-prog --local --file .cache/export.sql`，再 `npx wrangler dev`。
+## 網頁
+
+`docs/` 底下的靜態網頁（不需要 build），從 Worker API 讀資料。
+
+本機開發：先把遠端資料匯出到本機 D1，再 `npm run dev`（API 在 8811、網頁在 8812，本機不快取）：
+
+```bash
+npx wrangler d1 export ff14-prog --remote --output .cache/export.sql
+npx wrangler d1 execute ff14-prog --local --file .cache/export.sql
+npm run dev
+```
+
+本機 D1 已經有資料時，要先刪掉 `.wrangler/state/v3/d1` 再匯入。
 
 ## 實測發現（2026-10-22）
 

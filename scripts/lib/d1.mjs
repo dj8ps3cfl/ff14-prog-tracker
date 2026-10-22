@@ -44,6 +44,12 @@ export function sqlValue(v) {
   return `'${String(v).replaceAll("'", "''")}'`;
 }
 
+// 資料庫資訊，包含過去 24 小時的讀寫列數（rows_written_24h 等）
+export async function info() {
+  const stdout = await wrangler(['d1', 'info', DATABASE, '--json']);
+  return JSON.parse(stdout.slice(stdout.indexOf('{')));
+}
+
 // 執行唯讀查詢，回傳每個敘述的結果列
 export async function query(sql) {
   const stdout = await wrangler(['d1', 'execute', DATABASE, '--remote', '--json', '--command', sql]);

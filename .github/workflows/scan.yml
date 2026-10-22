@@ -27,8 +27,9 @@ jobs:
 
       - run: npm ci
 
+      # 先掃最近的，剩下的 FFLogs 點數和 D1 寫入額度拿去補歷史
       - name: Scan
-        run: node scripts/scan.mjs
+        run: node scripts/scan.mjs auto
         env:
           FFLOGS_CLIENT_ID: ${{ secrets.FFLOGS_CLIENT_ID }}
           FFLOGS_CLIENT_SECRET: ${{ secrets.FFLOGS_CLIENT_SECRET }}

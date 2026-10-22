@@ -1,18 +1,23 @@
 // 正式掃描：抓含繁中玩家的公開 reports，把每一場 pull（含滅團）存進 D1
 //
 // 用法：
-//   node scripts/scan.mjs                         掃描最近 windowHours 小時（排程每 30 分鐘跑這個）
-//   node scripts/scan.mjs backfill --since 2026-07-28
-//                                                 往回補歷史資料，每次跑到額度用完為止，下次接著補
+//   node scripts/scan.mjs            掃描最近 windowHours 小時
+//   node scripts/scan.mjs backfill   往回補歷史資料，補到各 zone 的 backfillSince，額度用完就停，下次接著補
+//   node scripts/scan.mjs auto       先掃最近的，剩下的額度拿去補歷史（排程每 30 分鐘跑這個）
 // 選項：
+//   --since <日期>     backfill 補到哪一天，覆蓋 config 的 backfillSince
 //   --max-points <n>   這次最多用多少 FFLogs 點數（預設看 config/tracked.json 的 maxPointsPerRun）
+//
+// 兩種額度都會控制：FFLogs 每小時的點數，以及 D1 免費方案每天 10 萬列的寫入。
+// D1 寫入以「過去 24 小時已寫入列數 + 這次估計寫入」計算，
+// 一般掃描最多用到 dailyWriteLimit，補歷史最多用到 backfillWriteLimit，留空間給之後的一般掃描
 //
 // 同一時間只能有一個掃描在跑：新資料的 id 是程式自己依目前最大值往上配的
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { SERVERS, jobCode, progressRank, serverCode } from '../shared/codes.mjs';
-import { executeStatements, insertStatements, query, queryIn, sqlValue } from './lib/d1.mjs';
+import { executeStatements, info, insertStatements, query, queryIn, sqlValue } from './lib/d1.mjs';
 import { getRateLimit, gql } from './lib/fflogs.mjs';
 
 const HOUR = 3_600_000;
@@ -20,6 +25,8 @@ const DAY = 24 * HOUR;
 // 實測的點數花費，用來在送出查詢前估算額度
 const COST_PER_PAGE = 1.5;
 const COST_PER_REPORT = 2.2;
+// 每份 report 大約寫入 D1 多少列（實測約 100，含索引），抓取前用來預留寫入額度
+const WRITES_PER_REPORT = 110;
 // 一次 GraphQL 查詢合併幾份 report
 const BATCH_SIZE = 5;
 // 同隊伍、同副本，開打時間差在這個秒數內就當成同一場被重複上傳
@@ -32,9 +39,9 @@ const times100 = (v) => (v == null ? null : Math.round(v * 100));
 const config = JSON.parse(await readFile(new URL('../config/tracked.json', import.meta.url), 'utf8'));
 
 class Budget {
-  constructor(limit) {
+  constructor(limit, used = 0) {
     this.limit = limit;
-    this.used = 0;
+    this.used = used;
   }
   canSpend(points) {
     return this.used + points <= this.limit;
@@ -195,7 +202,8 @@ const STATS_UPSERT = `ON CONFLICT (player_id, encounter) DO UPDATE SET
   first_kill = CASE WHEN excluded.first_kill_at < coalesce(first_kill_at, 9e18) THEN excluded.first_kill ELSE first_kill END,
   first_kill_at = CASE WHEN excluded.first_kill_at < coalesce(first_kill_at, 9e18) THEN excluded.first_kill_at ELSE first_kill_at END`;
 
-// 把這一批掃描的結果寫進資料庫：新的 pull、角色、摘要，最後才把 report 標成已掃描
+// 把這一批掃描的結果寫進資料庫：新的 pull、角色、摘要，最後才把 report 標成已掃描。
+// 回傳估計寫入的列數（有唯一索引或一般索引的表，每列另外多算一列）
 async function save(candidates, scanned, known, ctx) {
   const pulls = await dropDuplicates(candidates);
   ctx.stats.duplicates += candidates.length - pulls.length;
@@ -272,6 +280,8 @@ async function save(candidates, scanned, known, ctx) {
     ...updatedReports,
   ]);
   ctx.stats.newPlayers += created.length;
+  return created.length * 2 + newReports.length * 2 + pullRows.length * 2 + pullPlayerRows.length +
+    statRows.length + updatedReports.length;
 }
 
 // 掃描某個 zone 在 [start, end] 之間的 reports，回傳範圍內是否全部處理完
@@ -287,11 +297,16 @@ async function scanWindow(zone, start, end, ctx) {
   const pending = reports.filter((r) => known.get(r.code)?.end_time !== toSeconds(r.endTime));
   const scanned = [];
   const candidates = [];
+  let reservedWrites = 0;
 
   for (let i = 0; i < pending.length; i += BATCH_SIZE) {
     const chunk = pending.slice(i, i + BATCH_SIZE);
-    if (!ctx.budget.canSpend(chunk.length * COST_PER_REPORT)) break;
+    const writes = chunk.length * WRITES_PER_REPORT;
+    if (!ctx.budget.canSpend(chunk.length * COST_PER_REPORT) || !ctx.writes.canSpend(writes)) break;
     ctx.budget.spend(chunk.length * COST_PER_REPORT);
+    // 先預留寫入額度，寫完再換成實際數字
+    ctx.writes.spend(writes);
+    reservedWrites += writes;
     const fetched = await fetchReports(chunk.map((r) => r.code));
     for (const [k, report] of fetched.entries()) {
       // 拿不到（private / 已刪除）也記成已掃描，免得每次都重抓
@@ -301,7 +316,7 @@ async function scanWindow(zone, start, end, ctx) {
       candidates.push(...extractPulls(report, zone));
     }
   }
-  if (scanned.length) await save(candidates, scanned, known, ctx);
+  if (scanned.length) ctx.writes.spend((await save(candidates, scanned, known, ctx)) - reservedWrites);
   return listed && scanned.length === pending.length;
 }
 
@@ -316,8 +331,7 @@ async function main() {
     },
   });
   const mode = positionals[0] ?? 'scan';
-  if (!['scan', 'backfill'].includes(mode)) throw new Error(`不認得的模式：${mode}`);
-  if (mode === 'backfill' && !values.since) throw new Error('backfill 需要 --since，例如 --since 2026-07-28');
+  if (!['scan', 'backfill', 'auto'].includes(mode)) throw new Error(`不認得的模式：${mode}`);
 
   const now = Date.now();
   const rate = await getRateLimit();
@@ -340,22 +354,44 @@ async function main() {
      SELECT key, value FROM meta`
   );
   const meta = Object.fromEntries(metaRows.map((r) => [r.key, r.value]));
+  // D1 的 24 小時統計偶爾會回 0，所以也自己記一份當天（UTC，跟 D1 額度重置時間一樣）的寫入量，取兩者較大的
+  const writesKey = `writes:${new Date(now).toISOString().slice(0, 10)}`;
+  const { rows_written_24h: reported } = await info();
+  const writtenBefore = Math.max(reported ?? 0, Number(meta[writesKey] ?? 0));
   const ctx = {
     budget,
+    writes: new Budget(config.dailyWriteLimit, writtenBefore),
     ids: { ...maxIds },
     stats: { listed: 0, reports: 0, pulls: 0, kills: 0, duplicates: 0, newPlayers: 0 },
   };
+  console.log(
+    `D1 寫入：D1 統計 ${reported ?? '?'} 列、自己記錄 ${meta[writesKey] ?? 0} 列，以 ${writtenBefore} 計；` +
+      `上限 ${config.dailyWriteLimit}（補歷史 ${config.backfillWriteLimit}）`
+  );
 
-  for (const zone of config.zones) {
-    if (mode === 'scan') {
+  if (mode !== 'backfill') {
+    for (const zone of config.zones) {
       const done = await scanWindow(zone, now - config.windowHours * HOUR, now, ctx);
-      console.log(`zone ${zone.id} ${zone.name}：${done ? '完成' : '額度用完，下次繼續'}`);
-    } else {
-      const since = new Date(`${values.since}T00:00:00+08:00`).getTime();
+      console.log(`[最近] zone ${zone.id} ${zone.name}：${done ? '完成' : '額度用完，下次繼續'}`);
+    }
+  }
+
+  if (mode !== 'scan') {
+    // 補歷史只能用到較低的上限，保留寫入額度給之後每 30 分鐘的一般掃描
+    ctx.writes.limit = config.backfillWriteLimit;
+    // 照 config 的順序一個 zone 補完才補下一個，目前版本的副本優先
+    for (const zone of config.zones) {
+      const sinceDate = values.since ?? zone.backfillSince;
+      if (!sinceDate) continue;
+      const since = new Date(`${sinceDate}T00:00:00+08:00`).getTime();
       const key = `backfill:${zone.id}`;
       let cursor = Number(meta[key] ?? now - config.windowHours * HOUR);
       // 一天一天往回補，整天處理完才把游標往前推
-      while (cursor > since && budget.canSpend(COST_PER_PAGE)) {
+      while (
+        cursor > since &&
+        budget.canSpend(COST_PER_PAGE + BATCH_SIZE * COST_PER_REPORT) &&
+        ctx.writes.canSpend(BATCH_SIZE * WRITES_PER_REPORT)
+      ) {
         const start = Math.max(since, cursor - DAY);
         if (!(await scanWindow(zone, start, cursor, ctx))) break;
         cursor = start;
@@ -363,11 +399,21 @@ async function main() {
           `INSERT INTO meta (key, value) VALUES (${sqlValue(key)}, ${sqlValue(String(cursor))})
            ON CONFLICT (key) DO UPDATE SET value = excluded.value;`,
         ]);
+        ctx.writes.spend(1);
       }
       const at = new Date(cursor).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
-      console.log(`zone ${zone.id} ${zone.name}：${cursor <= since ? '已補完' : `補到 ${at}`}`);
+      console.log(`[補歷史] zone ${zone.id} ${zone.name}：${cursor <= since ? `已補完（到 ${sinceDate}）` : `補到 ${at}`}`);
+      if (cursor > since) break;
     }
   }
+
+  const writtenThisRun = ctx.writes.used - writtenBefore;
+  await executeStatements([
+    `INSERT INTO meta (key, value) VALUES (${sqlValue(writesKey)}, ${sqlValue(String(writtenThisRun))})
+     ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + ${writtenThisRun};`,
+    // 舊日期的計數用不到了
+    `DELETE FROM meta WHERE key LIKE 'writes:%' AND key < ${sqlValue(`writes:${new Date(now - 2 * DAY).toISOString().slice(0, 10)}`)};`,
+  ]);
 
   const after = await getRateLimit();
   const s = ctx.stats;
@@ -378,6 +424,7 @@ async function main() {
   console.log(
     `FFLogs 點數：估計 ${budget.used.toFixed(1)}，實際 ${(after.pointsSpentThisHour - rate.pointsSpentThisHour).toFixed(1)}`
   );
+  console.log(`D1 寫入：這次約 ${writtenThisRun} 列，合計約 ${ctx.writes.used} 列`);
 }
 
 main().catch((err) => {

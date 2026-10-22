@@ -232,6 +232,7 @@ function encounterCard(e, playerId) {
       <dl class="facts">
         ${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
       </dl>
+      ${phaseChart(e)}
       ${progressChart(e.daily)}
       <div class="enc-actions">
         <a href="${escapeHtml(best.url)}" target="_blank" rel="noopener">${kill ? '通關那場' : '最佳一場'}的死亡紀錄 ↗</a>
@@ -239,6 +240,27 @@ function encounterCard(e, playerId) {
       </div>
       <div class="pulls" hidden></div>
     </article>`;
+}
+
+// 各階段到達次數的橫條圖，長度是佔總場數的比例
+function phaseChart(e) {
+  if (!e.phases?.length) return '';
+  // wiped 是 null 代表「通關」那一列
+  const row = (label, count, wiped) => {
+    const note = wiped === null ? `通關 ${count} 次` : `到達 ${label} ${count} 次，在這裡滅團 ${wiped} 次`;
+    return `
+      <div class="phase-row ${wiped === null ? 'kill' : ''}" title="${escapeHtml(note)}">
+        <span class="phase-label">${label}</span>
+        <span class="phase-bar"><span style="width:${count ? Math.max(1, (count / e.pulls) * 100) : 0}%"></span></span>
+        <span class="phase-num">${count} 次${wiped === null ? '' : `<span class="phase-wiped"> · 滅 ${wiped}</span>`}</span>
+      </div>`;
+  };
+  return `
+    <div class="phases">
+      <div class="chart-title">各階段到達次數</div>
+      ${e.phases.map((p) => row(`P${p.phase}`, p.reached, p.wiped)).join('')}
+      ${row('通關', e.kills, null)}
+    </div>`;
 }
 
 // 每日最佳進度的折線圖，橫軸依實際日期間隔

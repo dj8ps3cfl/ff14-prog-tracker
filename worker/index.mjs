@@ -88,7 +88,7 @@ async function player(db, params) {
   const p = await db.prepare('SELECT id, name, server FROM players WHERE name = ?1 AND server = ?2').bind(name, server).first();
   if (!p) return json({ error: '找不到這個角色' }, 404);
 
-  const [{ results: stats }, { results: daily }] = await db.batch([
+  const [{ results: stats }, { results: daily }, { results: endings }] = await db.batch([
     db.prepare(`
       SELECT s.encounter, s.pulls, s.kills, s.first_pull, s.last_pull,
              b.kill AS b_kill, b.phase AS b_phase, b.boss AS b_boss, b.pct AS b_pct,
@@ -114,6 +114,12 @@ async function player(db, params) {
       WHERE pp.player_id = ?1
       GROUP BY u.encounter, day
       ORDER BY u.encounter, day`).bind(p.id),
+    // 每個階段結束（滅團或通關）的場數，用來算每個 P 到達幾次
+    db.prepare(`
+      SELECT u.encounter, abs(u.phase) AS phase, u.kill, count(*) AS n
+      FROM pull_players pp JOIN pulls u ON u.id = pp.pull_id
+      WHERE pp.player_id = ?1
+      GROUP BY u.encounter, abs(u.phase), u.kill`).bind(p.id),
   ]);
 
   return json({
@@ -130,8 +136,26 @@ async function player(db, params) {
       daily: daily
         .filter((d) => d.encounter === s.encounter)
         .map((d) => ({ date: d.day, pulls: d.pulls, kills: d.kills, bestPct: d.best_rank < 0 ? 0 : d.best_rank / 100 })),
+      phases: phaseStats(endings.filter((e) => e.encounter === s.encounter)),
     })),
   });
+}
+
+// 每個 P 到達幾次、在那個 P 滅了幾次。結束在 P3 的那場也算到過 P1、P2。
+// 只有一個階段的副本回傳空陣列
+function phaseStats(rows) {
+  const maxPhase = Math.max(0, ...rows.map((r) => r.phase ?? 0));
+  if (maxPhase < 2) return [];
+  const phases = [];
+  for (let k = 1; k <= maxPhase; k++) {
+    phases.push({
+      phase: k,
+      // 沒有階段資訊的 pull 當成只到過 P1
+      reached: rows.filter((r) => Math.max(1, r.phase ?? 1) >= k).reduce((sum, r) => sum + r.n, 0),
+      wiped: rows.filter((r) => !r.kill && Math.max(1, r.phase ?? 1) === k).reduce((sum, r) => sum + r.n, 0),
+    });
+  }
+  return phases;
 }
 
 async function pulls(db, params) {
@@ -194,6 +218,7 @@ export default {
       return json({ error: '伺服器錯誤' }, 500);
     }
     if (cache && response.status === 200) ctx.waitUntil(cache.put(request, response.clone()));
+    if (env.NO_CACHE) response.headers.set('Cache-Control', 'no-store');
     return response;
   },
 };

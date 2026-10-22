@@ -383,6 +383,45 @@ input[type='search']:focus {
   font-variant-numeric: tabular-nums;
 }
 
+.phases {
+  margin-top: 14px;
+  display: grid;
+  gap: 4px;
+}
+.phase-row {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.phase-label {
+  color: var(--muted);
+}
+.phase-bar {
+  height: 10px;
+  background: var(--track);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.phase-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--prog);
+  opacity: 0.85;
+}
+.phase-row.kill .phase-bar > span {
+  background: var(--kill);
+}
+.phase-num {
+  min-width: 84px;
+  text-align: right;
+}
+.phase-wiped {
+  color: var(--muted);
+}
+
 .chart {
   margin-top: 14px;
 }

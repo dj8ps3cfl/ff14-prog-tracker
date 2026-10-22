@@ -3,14 +3,17 @@
   "maxPagesPerZone": 20,
   "maxPointsPerRun": 600,
   "reservePoints": 100,
+  "dailyWriteLimit": 90000,
+  "backfillWriteLimit": 65000,
   "zones": [
     {
       "id": 68,
       "name": "AAC Cruiserweight",
       "category": "零式",
       "difficulty": 101,
+      "backfillSince": "2026-07-28",
       "encounters": {
-        "97": "M5S 熱舞綠光",
+        "97":"M5S 熱舞綠光",
         "98": "M6S 糖彩狂潮",
         "99": "M7S 野蠻憎惡",
         "100": "M8S 呼嘯之劍"
@@ -21,8 +24,9 @@
       "name": "AAC Light-Heavyweight",
       "category": "零式",
       "difficulty": 101,
+      "backfillSince": "2026-01-01",
       "encounters": {
-        "93": "M1S 黑貓",
+        "93":"M1S 黑貓",
         "94": "M2S 蜂蜂小甜心",
         "95": "M3S 野蠻炸彈",
         "96": "M4S 狡雷"
@@ -32,6 +36,7 @@
       "id": 65,
       "name": "Futures Rewritten",
       "category": "絕",
+      "backfillSince": "2026-01-01",
       "encounters": {
         "1079": "絕 伊甸"
       }
@@ -40,8 +45,9 @@
       "id": 59,
       "name": "Ultimates (Legacy)",
       "category": "絕",
+      "backfillSince": "2026-01-01",
       "encounters": {
-        "1073": "絕 巴哈姆特",
+        "1073":"絕 巴哈姆特",
         "1074": "絕 究極神兵",
         "1075": "絕 亞歷山大",
         "1076": "絕 幻想龍詩",
