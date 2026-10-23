@@ -761,6 +761,36 @@ main.wrap {
   background: var(--kill-soft);
 }
 
+/* 自動複製失敗時的手動複製視窗 */
+.share-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 18px;
+  color: var(--text);
+}
+.share-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+.share-dialog-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.share-dialog textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 14px/1.6 var(--sans);
+}
+.share-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
 /* ---------- pull 列表 ---------- */
 
 .pulls {

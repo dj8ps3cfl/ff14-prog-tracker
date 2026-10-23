@@ -263,19 +263,17 @@ function shareText(player, e) {
   return lines.join('\n');
 }
 
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // 不是 https 或瀏覽器不允許時，改用舊方法
-  }
+// 舊的複製方法：在點擊當下同步執行，LINE、Discord 等 App 內建瀏覽器和 iPhone 支援度比 Clipboard API 好
+function legacyCopy(text) {
   const area = document.createElement('textarea');
   area.value = text;
-  area.setAttribute('readonly', '');
-  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  // 16px 避免 iPhone 自動放大；不能設 readonly，否則 iPhone 選不到文字
+  area.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;font-size:16px';
   document.body.append(area);
+  const previous = document.activeElement;
+  area.focus();
   area.select();
+  area.setSelectionRange(0, text.length);
   let ok = false;
   try {
     ok = document.execCommand('copy');
@@ -283,15 +281,52 @@ async function copyText(text) {
     ok = false;
   }
   area.remove();
+  previous?.focus?.({ preventScroll: true });
   return ok;
+}
+
+async function copyText(text) {
+  if (legacyCopy(text)) return true;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 兩種複製方法都失敗時，直接把文字顯示出來讓人手動複製
+function showShareDialog(text) {
+  let dialog = document.getElementById('share-dialog');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'share-dialog';
+    dialog.className = 'share-dialog card';
+    dialog.innerHTML = `
+      <p class="share-dialog-title">這個瀏覽器不讓網頁自動複製，請長按或全選下面的文字手動複製：</p>
+      <textarea rows="8"></textarea>
+      <div class="share-dialog-actions"><button class="btn" type="button" value="close">關閉</button></div>`;
+    dialog.querySelector('button').addEventListener('click', () => dialog.close());
+    document.body.append(dialog);
+  }
+  const area = dialog.querySelector('textarea');
+  area.value = text;
+  dialog.showModal();
+  area.focus();
+  area.select();
 }
 
 async function shareEncounter(btn, player, e) {
   if (!e) return;
+  const text = shareText(player, e);
   const label = btn.querySelector('.btn-label');
-  const ok = await copyText(shareText(player, e));
-  btn.classList.toggle('done', ok);
-  label.textContent = ok ? '已複製' : '複製失敗';
+  const ok = await copyText(text);
+  if (!ok) {
+    showShareDialog(text);
+    return;
+  }
+  btn.classList.add('done');
+  label.textContent = '已複製';
   clearTimeout(btn._resetTimer);
   btn._resetTimer = setTimeout(() => {
     btn.classList.remove('done');
