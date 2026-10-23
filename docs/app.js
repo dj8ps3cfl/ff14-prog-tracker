@@ -18,6 +18,10 @@ const JOBS = {
   Pictomancer: ['PCT', 'dps'], BlueMage: ['BLU', 'dps'],
 };
 
+const SEARCH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" stroke-linecap="round" /></svg>`;
+const CRYSTAL_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1 19 9 12 23 5 9Z" fill="currentColor" /></svg>`;
+const CHECK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m5 12 5 5 9-10" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+
 const app = document.getElementById('app');
 let encounters = [];
 let renderToken = 0;
@@ -90,17 +94,22 @@ function renderHome(query = '') {
   const recent = loadRecent();
   app.innerHTML = `
     <section class="hero">
+      <p class="hero-eyebrow">FINAL FANTASY XIV · 繁中服</p>
       <h1>你練到哪裡了？</h1>
-      <p>查詢繁中服角色在零式和絕本的開荒進度。沒通關的紀錄也算，每一場都能連到 FFLogs 看死亡紀錄。</p>
+      <div class="hero-divider">${CRYSTAL_ICON}</div>
+      <p class="hero-desc">查詢角色在零式與絕本的開荒進度。沒通關的紀錄也算，每一場都能連到 FFLogs 看死亡紀錄。</p>
       <form class="hero-search" id="hero-search" role="search">
-        <input type="search" name="q" placeholder="輸入角色名，例如：乾太" autocomplete="off" aria-label="角色名" value="${escapeHtml(query)}" />
+        <label class="search-field">
+          ${SEARCH_ICON}
+          <input type="search" name="q" placeholder="輸入角色名，例如：乾太" autocomplete="off" aria-label="角色名" value="${escapeHtml(query)}" />
+        </label>
       </form>
     </section>
     <div id="results"></div>
     ${recent.length ? `
       <h2 class="section-title">最近查看</h2>
       <div class="recent">
-        ${recent.map((p) => `<a href="${playerHash(p.server, p.name)}">${escapeHtml(p.name)}<span class="result-server"> · ${escapeHtml(p.server)}</span></a>`).join('')}
+        ${recent.map((p) => `<a class="card" href="${playerHash(p.server, p.name)}">${escapeHtml(p.name)}<span class="server-pill">${escapeHtml(p.server)}</span></a>`).join('')}
       </div>` : ''}
   `;
   const input = app.querySelector('#hero-search input');
@@ -158,9 +167,12 @@ function resultItem(p) {
     .join('');
   return `
     <li>
-      <a class="result" href="${playerHash(p.server, p.name)}">
-        <span class="result-name">${escapeHtml(p.name)}</span>
-        <span class="result-server">${escapeHtml(p.server)}</span>
+      <a class="result card" href="${playerHash(p.server, p.name)}">
+        <span class="avatar" aria-hidden="true">${escapeHtml([...p.name][0] ?? '?')}</span>
+        <span class="result-who">
+          <span class="result-name">${escapeHtml(p.name)}</span>
+          <span><span class="server-pill">${escapeHtml(p.server)}</span></span>
+        </span>
         <span class="result-chips">${chips}</span>
       </a>
     </li>`;
@@ -189,6 +201,8 @@ async function renderPlayer(server, name, token) {
   const order = new Map(encounters.map((e, i) => [e.id, i]));
   const list = [...data.encounters].sort((a, b) => (order.get(a.id) ?? 999) - (order.get(b.id) ?? 999));
   const totalPulls = list.reduce((sum, e) => sum + e.pulls, 0);
+  const cleared = list.filter((e) => e.kills > 0).length;
+  const lastPull = Math.max(...list.map((e) => e.lastPull));
   const groups = [];
   for (const e of list) {
     const category = e.category ?? '其他';
@@ -198,11 +212,19 @@ async function renderPlayer(server, name, token) {
   }
 
   app.innerHTML = `
-    <div class="player-head">
-      <h1>${escapeHtml(data.player.name)}</h1>
-      <span class="server">${escapeHtml(data.player.server)}</span>
-    </div>
-    <p class="player-summary">${list.length} 個副本有紀錄 · 共 ${totalPulls} 場 pull</p>
+    <section class="player-card card">
+      <span class="avatar" aria-hidden="true">${escapeHtml([...data.player.name][0] ?? '?')}</span>
+      <div class="player-id">
+        <h1>${escapeHtml(data.player.name)}</h1>
+        <span class="server-pill">${escapeHtml(data.player.server)}</span>
+      </div>
+      <div class="player-stats">
+        <div class="stat"><b>${list.length}</b><span>副本</span></div>
+        <div class="stat"><b>${cleared}</b><span>已通關</span></div>
+        <div class="stat"><b>${totalPulls}</b><span>總場數</span></div>
+        <div class="stat"><b>${list.length ? fmtDate(lastPull).slice(5) : '-'}</b><span>最近 pull</span></div>
+      </div>
+    </section>
     ${groups.map((g) => `
       <h2 class="section-title">${escapeHtml(g.category)}</h2>
       <div class="enc-grid">${g.items.map((e) => encounterCard(e, data.player.id)).join('')}</div>
@@ -223,13 +245,17 @@ function encounterCard(e, playerId) {
   if (kill) facts.splice(1, 0, ['通關次數', e.kills]);
 
   return `
-    <article class="enc">
+    <article class="enc card ${kill ? 'is-kill' : ''}">
       <div class="enc-head">
         <h3>${escapeHtml(e.name ?? `副本 ${e.id}`)}</h3>
-        <span class="status ${kill ? 'kill' : ''}">${escapeHtml(progressLabel(best))}</span>
+        <span class="status ${kill ? 'kill' : ''}">${kill ? CHECK_ICON : ''}${escapeHtml(progressLabel(best))}</span>
       </div>
-      <div class="bar ${kill ? 'kill' : ''}" role="img" aria-label="進度 ${progressWidth(best).toFixed(0)}%" title="整場戰鬥進度 ${progressWidth(best).toFixed(0)}%">
+      <div class="bar ${kill ? 'kill' : ''}" role="img" aria-label="整場戰鬥進度 ${progressWidth(best).toFixed(0)}%">
         <span style="width:${progressWidth(best)}%"></span>
+      </div>
+      <div class="bar-caption">
+        <span>${kill ? '已通關' : '最佳進度'}</span>
+        <span>${kill ? '100%' : `${progressWidth(best).toFixed(1)}%`}</span>
       </div>
       <dl class="facts">
         ${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}
@@ -238,7 +264,7 @@ function encounterCard(e, playerId) {
       ${progressChart(e.daily)}
       <div class="enc-actions">
         <a href="${escapeHtml(best.url)}" target="_blank" rel="noopener">${kill ? '通關那場' : '最佳一場'}的死亡紀錄 ↗</a>
-        <button class="btn" type="button" data-pulls data-player="${playerId}" data-encounter="${e.id}">所有 pull（${e.pulls}）</button>
+        <button class="btn" type="button" aria-expanded="false" data-pulls data-player="${playerId}" data-encounter="${e.id}">所有 pull・${e.pulls} 場</button>
       </div>
       <div class="pulls" hidden></div>
     </article>`;
@@ -258,12 +284,14 @@ function phaseChart(e) {
       </div>`;
   };
   return `
+    <div class="sub-title">各階段到達次數</div>
     <div class="phases">
-      <div class="chart-title">各階段到達次數</div>
       ${e.phases.map((p) => row(`P${p.phase}`, p.reached, p.wiped)).join('')}
       ${row('通關', e.kills, null)}
     </div>`;
 }
+
+let chartSeq = 0;
 
 // 每日最佳進度的折線圖，橫軸依實際日期間隔
 function progressChart(daily) {
@@ -283,6 +311,9 @@ function progressChart(daily) {
     .map((v) => `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}" /><text class="axis" x="${pad.l - 6}" y="${y(v) + 4}" text-anchor="end">${v}%</text>`)
     .join('');
   const line = pts.map((p) => `${x(p.date).toFixed(1)},${y(p.progress).toFixed(1)}`).join(' ');
+  // 折線下方的漸層填色
+  const area = `${x(pts[0].date).toFixed(1)},${y(0)} ${line} ${x(pts.at(-1).date).toFixed(1)},${y(0)}`;
+  const gradientId = `area-${++chartSeq}`;
   const dots = pts
     .map((p) => {
       const label = p.kills > 0 ? `通關 ${p.kills} 次` : `最佳進度 ${p.progress.toFixed(1)}%`;
@@ -294,9 +325,16 @@ function progressChart(daily) {
     .join('');
 
   return `
+    <div class="sub-title">每日最佳進度</div>
     <div class="chart">
-      <div class="chart-title">每日最佳進度</div>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日最佳進度折線圖">${grid}<polyline class="line" points="${line}" />${dots}${labels}</svg>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="每日最佳進度折線圖">
+        <defs>
+          <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+            <stop class="area-top" offset="0" /><stop class="area-bottom" offset="1" />
+          </linearGradient>
+        </defs>
+        ${grid}<polygon points="${area}" fill="url(#${gradientId})" /><polyline class="line" points="${line}" />${dots}${labels}
+      </svg>
     </div>`;
 }
 
@@ -304,9 +342,11 @@ async function togglePulls(btn) {
   const box = btn.closest('.enc').querySelector('.pulls');
   if (!box.hidden) {
     box.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
     return;
   }
   box.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
   if (!box.dataset.loaded) {
     box.dataset.loaded = '1';
     box.innerHTML = `
@@ -321,7 +361,7 @@ async function togglePulls(btn) {
 
 async function loadPulls(box, player, encounter, before) {
   const more = box.querySelector('.pulls-more');
-  more.innerHTML = '<span class="result-server">讀取中…</span>';
+  more.innerHTML = '<span class="phase-wiped">讀取中…</span>';
   try {
     const { pulls, next } = await api(
       `/pulls?player=${player}&encounter=${encounter}${before ? `&before=${encodeURIComponent(before)}` : ''}`

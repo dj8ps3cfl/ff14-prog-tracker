@@ -5,14 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>開荒進度 | FFXIV 繁中服</title>
     <meta name="description" content="查詢繁中服 FF14 角色在零式、絕本的開荒進度，包含未通關的紀錄，並連到 FFLogs 看死亡紀錄。" />
+    <meta name="theme-color" content="#0a0d14" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f3efe6" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 1 19 9 12 23 5 9Z' fill='%23d6b56d'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap"
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <header class="site-header">
       <div class="wrap header-inner">
-        <a class="brand" href="#/">開荒進度<span class="brand-sub">FFXIV 繁中服</span></a>
+        <a class="brand" href="#/">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 1 19 9 12 23 5 9Z" fill="currentColor" opacity="0.9" />
+            <path d="M12 1 15 9 12 23 9 9Z" fill="#fff" opacity="0.25" />
+            <path d="M5 9h14" stroke="#fff" stroke-opacity="0.35" stroke-width="0.8" />
+          </svg>
+          <span class="brand-name">開荒進度</span>
+          <span class="brand-sub">FFXIV 繁中服</span>
+        </a>
         <form class="header-search" id="header-search" role="search">
-          <input type="search" name="q" placeholder="搜尋角色名" autocomplete="off" aria-label="搜尋角色名" />
+          <label class="search-field">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" stroke-linecap="round" />
+            </svg>
+            <input type="search" name="q" placeholder="搜尋角色名" autocomplete="off" aria-label="搜尋角色名" />
+          </label>
         </form>
       </div>
     </header>
