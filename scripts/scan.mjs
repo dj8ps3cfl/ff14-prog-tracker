@@ -111,9 +111,10 @@ function partyHash(party) {
 
 // 從 report 挑出要記錄的 pull，並換成資料庫用的精簡格式
 function extractPulls(report, zone) {
-  const actors = new Map(report.masterData.actors.map((a) => [a.id, a]));
+  // 少數 report（例如還在處理中）的 masterData 或 fights 會是 null，當成沒有資料
+  const actors = new Map((report.masterData?.actors ?? []).map((a) => [a.id, a]));
   const pulls = [];
-  for (const f of report.fights) {
+  for (const f of report.fights ?? []) {
     if (!(String(f.encounterID) in zone.encounters)) continue;
     if (zone.difficulty && f.difficulty !== zone.difficulty) continue;
     // 還在直播上傳中的 fight 先跳過，report 的 endTime 變了下次會重掃
