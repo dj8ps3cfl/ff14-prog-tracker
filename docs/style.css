@@ -229,18 +229,6 @@ main.wrap {
   box-shadow: 0 0 0 4px var(--gold-soft);
 }
 
-/* ---------- 頁尾 ---------- */
-
-.site-footer {
-  border-top: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 12.5px;
-  padding: 22px 0 30px;
-}
-.site-footer p {
-  margin: 4px 0;
-}
-
 /* ---------- 共用 ---------- */
 
 .section-title {
@@ -737,7 +725,9 @@ main.wrap {
   border-top: 1px solid var(--border);
   font-size: 14px;
 }
-.enc-actions .btn {
+.enc-buttons {
+  display: flex;
+  gap: 8px;
   margin-left: auto;
 }
 
@@ -760,6 +750,15 @@ main.wrap {
 .btn[aria-expanded='true'] {
   border-color: var(--gold);
   color: var(--gold-text);
+}
+.btn svg {
+  width: 14px;
+  height: 14px;
+}
+.btn.done {
+  border-color: var(--kill);
+  color: var(--kill);
+  background: var(--kill-soft);
 }
 
 /* ---------- pull 列表 ---------- */
@@ -868,7 +867,7 @@ main.wrap {
   .enc {
     padding: 16px 14px 14px;
   }
-  .enc-actions .btn {
+  .enc-buttons {
     margin-left: 0;
   }
   .pull-table .hide-sm {

@@ -20,7 +20,8 @@ const JOBS = {
 
 const SEARCH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" stroke-linecap="round" /></svg>`;
 const CRYSTAL_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1 19 9 12 23 5 9Z" fill="currentColor" /></svg>`;
-const CHECK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m5 12 5 5 9-10" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
+const SHARE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" stroke-linecap="round" /></svg>`;
+const CHECK_ICON =`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m5 12 5 5 9-10" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
 
 const app = document.getElementById('app');
 let encounters = [];
@@ -231,6 +232,71 @@ async function renderPlayer(server, name, token) {
     `).join('')}
   `;
   app.querySelectorAll('[data-pulls]').forEach((btn) => btn.addEventListener('click', () => togglePulls(btn)));
+  const byId = new Map(list.map((e) => [String(e.id), e]));
+  app.querySelectorAll('[data-share]').forEach((btn) =>
+    btn.addEventListener('click', () => shareEncounter(btn, data.player, byId.get(btn.dataset.encounter)))
+  );
+}
+
+// ---------- 分享 ----------
+
+// 分享用的角色頁網址，中文保留原樣，貼到聊天室比較好讀
+const shareUrl = (player) =>
+  `${location.origin}${location.pathname}#/p/${player.server}/${player.name.replaceAll(' ', '%20')}`;
+
+function shareText(player, e) {
+  const kill = e.kills > 0;
+  const lines = [`【${e.name}】${player.name}（${player.server}）`];
+  lines.push(
+    kill
+      ? `✅ 已通關 ${e.kills} 次（首次通關 ${fmtDate(e.firstKill.at)}）`
+      : `⚔️ 最佳進度：${progressLabel(e.best)}（整場 ${progressWidth(e.best).toFixed(1)}%）`
+  );
+  lines.push(`📊 共 ${e.pulls} 場・開荒 ${e.daily.length} 天`);
+  if (e.phases?.length) {
+    const steps = e.phases.map((p) => `P${p.phase} ${p.reached}`);
+    if (kill) steps.push(`通關 ${e.kills}`);
+    lines.push(`🧭 各階段到達次數：${steps.join(' → ')}`);
+  }
+  lines.push(`🔗 ${kill ? '通關那場' : '最佳一場'}的死亡紀錄：${e.best.url}`);
+  lines.push(`👉 ${shareUrl(player)}`);
+  return lines.join('\n');
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // 不是 https 或瀏覽器不允許時，改用舊方法
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+async function shareEncounter(btn, player, e) {
+  if (!e) return;
+  const label = btn.querySelector('.btn-label');
+  const ok = await copyText(shareText(player, e));
+  btn.classList.toggle('done', ok);
+  label.textContent = ok ? '已複製' : '複製失敗';
+  clearTimeout(btn._resetTimer);
+  btn._resetTimer = setTimeout(() => {
+    btn.classList.remove('done');
+    label.textContent = '分享';
+  }, 2000);
 }
 
 function encounterCard(e, playerId) {
@@ -264,7 +330,10 @@ function encounterCard(e, playerId) {
       ${progressChart(e.daily)}
       <div class="enc-actions">
         <a href="${escapeHtml(best.url)}" target="_blank" rel="noopener">${kill ? '通關那場' : '最佳一場'}的死亡紀錄 ↗</a>
-        <button class="btn" type="button" aria-expanded="false" data-pulls data-player="${playerId}" data-encounter="${e.id}">所有 pull・${e.pulls} 場</button>
+        <span class="enc-buttons">
+          <button class="btn" type="button" data-share data-encounter="${e.id}" title="把這個副本的戰績複製到剪貼簿">${SHARE_ICON}<span class="btn-label">分享</span></button>
+          <button class="btn" type="button" aria-expanded="false" data-pulls data-player="${playerId}" data-encounter="${e.id}">所有 pull・${e.pulls} 場</button>
+        </span>
       </div>
       <div class="pulls" hidden></div>
     </article>`;
