@@ -231,8 +231,10 @@ const STATS_UPSERT = `ON CONFLICT (player_id, encounter) DO UPDATE SET
   first_kill_at = CASE WHEN excluded.first_kill_at < coalesce(first_kill_at, 9e18) THEN excluded.first_kill_at ELSE first_kill_at END`;
 
 // 把這一批掃描的結果寫進資料庫：新的 pull、角色、摘要，最後才把 report 標成已掃描。
+// rememberEmpty 為 false 時（補歷史），沒有新 pull 的 report（大多是沒有繁中玩家的國服 report）不記錄：
+// 補歷史的時段不會每輪重看，不需要記住「看過了」，可以省下寫入額度。
 // 回傳估計寫入的列數（有唯一索引或一般索引的表，每列另外多算一列）
-async function save(candidates, scanned, known, ctx) {
+async function save(candidates, scanned, known, ctx, { rememberEmpty }) {
   const pulls = await dropDuplicates(candidates);
   ctx.stats.duplicates += candidates.length - pulls.length;
   const { ids: playerIds, created } = await resolvePlayers(pulls, ctx);
@@ -241,7 +243,12 @@ async function save(candidates, scanned, known, ctx) {
   const newReports = [];
   const updatedReports = [];
   const now = toSeconds(Date.now());
+  const withPulls = new Set(pulls.map((p) => p.code));
   for (const r of scanned) {
+    if (!rememberEmpty && !withPulls.has(r.code) && !known.has(r.code)) {
+      ctx.stats.skippedReports++;
+      continue;
+    }
     const existing = known.get(r.code);
     if (existing) {
       reportIds.set(r.code, existing.id);
@@ -313,7 +320,7 @@ async function save(candidates, scanned, known, ctx) {
 }
 
 // 掃描某個 zone 在 [start, end] 之間的 reports。全部處理完回傳 null，否則回傳停止原因（STOP_REASONS 的 key）
-async function scanWindow(zone, start, end, ctx) {
+async function scanWindow(zone, start, end, ctx, { rememberEmpty = true } = {}) {
   const { reports, stop: listStop } = await listReports(zone.id, start, end, ctx.budget);
   ctx.stats.listed += reports.length;
   if (!reports.length) return listStop;
@@ -352,7 +359,7 @@ async function scanWindow(zone, start, end, ctx) {
       candidates.push(...extractPulls(report, zone));
     }
   }
-  if (scanned.length) ctx.writes.spend((await save(candidates, scanned, known, ctx)) - reservedWrites);
+  if (scanned.length) ctx.writes.spend((await save(candidates, scanned, known, ctx, { rememberEmpty })) - reservedWrites);
   return stop ?? listStop;
 }
 
@@ -398,7 +405,7 @@ async function main() {
     budget,
     writes: new Budget(config.dailyWriteLimit, writtenBefore),
     ids: { ...maxIds },
-    stats: { listed: 0, reports: 0, pulls: 0, kills: 0, duplicates: 0, newPlayers: 0 },
+    stats: { listed: 0, reports: 0, pulls: 0, kills: 0, duplicates: 0, newPlayers: 0, skippedReports: 0 },
   };
   console.log(
     `D1 寫入：D1 統計 ${reported ?? '?'} 列、自己記錄 ${meta[writesKey] ?? 0} 列，以 ${writtenBefore} 計；` +
@@ -427,7 +434,7 @@ async function main() {
       while (cursor > since) {
         if (!budget.canSpend(COST_PER_PAGE + BATCH_SIZE * COST_PER_REPORT)) stop = 'points';
         else if (!ctx.writes.canSpend(BATCH_SIZE * WRITES_PER_REPORT)) stop = 'writes';
-        else stop = await scanWindow(zone, Math.max(since, cursor - DAY), cursor, ctx);
+        else stop = await scanWindow(zone, Math.max(since, cursor - DAY), cursor, ctx, { rememberEmpty: false });
         if (stop) break;
         cursor = Math.max(since, cursor - DAY);
         await executeStatements([
@@ -457,7 +464,8 @@ async function main() {
   const s = ctx.stats;
   console.log(
     `完成：列出 ${s.listed} 份 report，新處理 ${s.reports} 份；` +
-      `新增 ${s.pulls} 場 pull（通關 ${s.kills}），重複上傳略過 ${s.duplicates} 場；新角色 ${s.newPlayers} 位`
+      `新增 ${s.pulls} 場 pull（通關 ${s.kills}），重複上傳略過 ${s.duplicates} 場；新角色 ${s.newPlayers} 位；` +
+      `補歷史時沒有繁中資料、不記錄的 report ${s.skippedReports} 份`
   );
   const actual = after.pointsSpentThisHour - rate.pointsSpentThisHour;
   console.log(
