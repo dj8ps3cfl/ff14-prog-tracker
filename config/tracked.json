@@ -1,6 +1,5 @@
 {
   "windowHours": 72,
-  "maxPagesPerZone": 20,
   "maxPointsPerRun": 600,
   "reservePoints": 100,
   "dailyWriteLimit": 90000,

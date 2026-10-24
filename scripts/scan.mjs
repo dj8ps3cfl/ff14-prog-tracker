@@ -53,12 +53,36 @@ class Budget {
 
 // ---------- FFLogs ----------
 
-// 列出時間範圍內 CN 區的 reports（繁中服的 report 也被標成 CN）
+// FFLogs 的 reports 列表最多只能翻到第 25 頁（每頁 100 份）
+const MAX_LIST_PAGES = 25;
+// 先切成 12 小時一段來列；舊絕本這種全球熱門的副本，72 小時就有超過 2500 份 report
+const LIST_CHUNK = 12 * HOUR;
+// 某一段還是翻不完就再切半，切到這個長度還翻不完就放棄那一段
+const MIN_LIST_WINDOW = HOUR;
+
+// 停止的原因，scanWindow 和 listReports 都用這些值；null 代表範圍內全部處理完
+const STOP_REASONS = {
+  points: 'FFLogs 點數用完',
+  writes: 'D1 寫入額度用完',
+  pages: '列表超過 FFLogs 的頁數上限',
+};
+
+// 列出時間範圍內 CN 區的 reports（繁中服的 report 也被標成 CN），新的時段先列
 async function listReports(zoneId, start, end, budget) {
+  const byCode = new Map();
+  for (let chunkEnd = end; chunkEnd > start; chunkEnd -= LIST_CHUNK) {
+    const { reports, stop } = await listWindow(zoneId, Math.max(start, chunkEnd - LIST_CHUNK), chunkEnd, budget);
+    // 跨時段的 report 可能在相鄰兩段都出現
+    for (const r of reports) byCode.set(r.code, r);
+    if (stop) return { reports: [...byCode.values()], stop };
+  }
+  return { reports: [...byCode.values()], stop: null };
+}
+
+async function listWindow(zoneId, start, end, budget) {
   const reports = [];
-  let complete = false;
-  for (let page = 1; page <= config.maxPagesPerZone; page++) {
-    if (!budget.canSpend(COST_PER_PAGE)) break;
+  for (let page = 1; page <= MAX_LIST_PAGES; page++) {
+    if (!budget.canSpend(COST_PER_PAGE)) return { reports, stop: 'points' };
     budget.spend(COST_PER_PAGE);
     const { reportData } = await gql(
       `query ($zoneID: Int, $start: Float, $end: Float, $page: Int) {
@@ -73,12 +97,15 @@ async function listReports(zoneId, start, end, budget) {
     );
     const result = reportData.reports;
     reports.push(...result.data.filter((r) => r.region?.slug === 'CN'));
-    if (!result.has_more_pages) {
-      complete = true;
-      break;
-    }
+    if (!result.has_more_pages) return { reports, stop: null };
   }
-  return { reports, complete };
+  // 翻到頁數上限還有下一頁：這段時間切成兩半重新列
+  if (end - start <= MIN_LIST_WINDOW) return { reports, stop: 'pages' };
+  const mid = start + Math.floor((end - start) / 2);
+  const later = await listWindow(zoneId, mid, end, budget);
+  if (later.stop) return later;
+  const earlier = await listWindow(zoneId, start, mid, budget);
+  return { reports: [...later.reports, ...earlier.reports], stop: earlier.stop };
 }
 
 async function fetchReports(codes) {
@@ -285,11 +312,11 @@ async function save(candidates, scanned, known, ctx) {
     statRows.length + updatedReports.length;
 }
 
-// 掃描某個 zone 在 [start, end] 之間的 reports，回傳範圍內是否全部處理完
+// 掃描某個 zone 在 [start, end] 之間的 reports。全部處理完回傳 null，否則回傳停止原因（STOP_REASONS 的 key）
 async function scanWindow(zone, start, end, ctx) {
-  const { reports, complete: listed } = await listReports(zone.id, start, end, ctx.budget);
+  const { reports, stop: listStop } = await listReports(zone.id, start, end, ctx.budget);
   ctx.stats.listed += reports.length;
-  if (!reports.length) return listed;
+  if (!reports.length) return listStop;
 
   const known = new Map(
     (await queryIn((list) => `SELECT id, code, end_time FROM reports WHERE code IN (${list})`, reports.map((r) => r.code)))
@@ -299,11 +326,19 @@ async function scanWindow(zone, start, end, ctx) {
   const scanned = [];
   const candidates = [];
   let reservedWrites = 0;
+  let stop = null;
 
   for (let i = 0; i < pending.length; i += BATCH_SIZE) {
     const chunk = pending.slice(i, i + BATCH_SIZE);
     const writes = chunk.length * WRITES_PER_REPORT;
-    if (!ctx.budget.canSpend(chunk.length * COST_PER_REPORT) || !ctx.writes.canSpend(writes)) break;
+    if (!ctx.budget.canSpend(chunk.length * COST_PER_REPORT)) {
+      stop = 'points';
+      break;
+    }
+    if (!ctx.writes.canSpend(writes)) {
+      stop = 'writes';
+      break;
+    }
     ctx.budget.spend(chunk.length * COST_PER_REPORT);
     // 先預留寫入額度，寫完再換成實際數字
     ctx.writes.spend(writes);
@@ -318,7 +353,7 @@ async function scanWindow(zone, start, end, ctx) {
     }
   }
   if (scanned.length) ctx.writes.spend((await save(candidates, scanned, known, ctx)) - reservedWrites);
-  return listed && scanned.length === pending.length;
+  return stop ?? listStop;
 }
 
 // ---------- 進入點 ----------
@@ -372,8 +407,8 @@ async function main() {
 
   if (mode !== 'backfill') {
     for (const zone of config.zones) {
-      const done = await scanWindow(zone, now - config.windowHours * HOUR, now, ctx);
-      console.log(`[最近] zone ${zone.id} ${zone.name}：${done ? '完成' : '額度用完，下次繼續'}`);
+      const stop = await scanWindow(zone, now - config.windowHours * HOUR, now, ctx);
+      console.log(`[最近] zone ${zone.id} ${zone.name}：${stop ? `${STOP_REASONS[stop]}，下次繼續` : '完成'}`);
     }
   }
 
@@ -388,14 +423,13 @@ async function main() {
       const key = `backfill:${zone.id}`;
       let cursor = Number(meta[key] ?? now - config.windowHours * HOUR);
       // 一天一天往回補，整天處理完才把游標往前推
-      while (
-        cursor > since &&
-        budget.canSpend(COST_PER_PAGE + BATCH_SIZE * COST_PER_REPORT) &&
-        ctx.writes.canSpend(BATCH_SIZE * WRITES_PER_REPORT)
-      ) {
-        const start = Math.max(since, cursor - DAY);
-        if (!(await scanWindow(zone, start, cursor, ctx))) break;
-        cursor = start;
+      let stop = null;
+      while (cursor > since) {
+        if (!budget.canSpend(COST_PER_PAGE + BATCH_SIZE * COST_PER_REPORT)) stop = 'points';
+        else if (!ctx.writes.canSpend(BATCH_SIZE * WRITES_PER_REPORT)) stop = 'writes';
+        else stop = await scanWindow(zone, Math.max(since, cursor - DAY), cursor, ctx);
+        if (stop) break;
+        cursor = Math.max(since, cursor - DAY);
         await executeStatements([
           `INSERT INTO meta (key, value) VALUES (${sqlValue(key)}, ${sqlValue(String(cursor))})
            ON CONFLICT (key) DO UPDATE SET value = excluded.value;`,
@@ -403,7 +437,10 @@ async function main() {
         ctx.writes.spend(1);
       }
       const at = new Date(cursor).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
-      console.log(`[補歷史] zone ${zone.id} ${zone.name}：${cursor <= since ? `已補完（到 ${sinceDate}）` : `補到 ${at}`}`);
+      console.log(
+        `[補歷史] zone ${zone.id} ${zone.name}：` +
+          (cursor <= since ? `已補完（到 ${sinceDate}）` : `補到 ${at}（${STOP_REASONS[stop]}）`)
+      );
       if (cursor > since) break;
     }
   }
@@ -422,8 +459,10 @@ async function main() {
     `完成：列出 ${s.listed} 份 report，新處理 ${s.reports} 份；` +
       `新增 ${s.pulls} 場 pull（通關 ${s.kills}），重複上傳略過 ${s.duplicates} 場；新角色 ${s.newPlayers} 位`
   );
+  const actual = after.pointsSpentThisHour - rate.pointsSpentThisHour;
   console.log(
-    `FFLogs 點數：估計 ${budget.used.toFixed(1)}，實際 ${(after.pointsSpentThisHour - rate.pointsSpentThisHour).toFixed(1)}`
+    `FFLogs 點數：估計 ${budget.used.toFixed(1)}，` +
+      (actual >= 0 ? `實際 ${actual.toFixed(1)}` : '實際用量不明（執行途中 FFLogs 額度重置了）')
   );
   console.log(`D1 寫入：這次約 ${writtenThisRun} 列，合計約 ${ctx.writes.used} 列`);
 }
