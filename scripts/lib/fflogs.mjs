@@ -1,6 +1,7 @@
 // FFLogs API v2 的最小 client：client credentials 取 token + GraphQL 查詢
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { fetchWithRetry } from './retry.mjs';
 
 const TOKEN_URL = 'https://www.fflogs.com/oauth/token';
 const API_URL = 'https://www.fflogs.com/api/v2/client';
@@ -39,7 +40,7 @@ async function readCachedToken() {
 }
 
 async function requestToken({ id, secret }) {
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithRetry('取得 FFLogs token', TOKEN_URL, {
     method: 'POST',
     headers: {
       Authorization: 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64'),
@@ -75,7 +76,7 @@ export async function getToken({ forceRefresh = false } = {}) {
 export async function gql(query, variables = {}, { partial = false } = {}) {
   let token = await getToken();
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(API_URL, {
+    const res = await fetchWithRetry('FFLogs 查詢', API_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token.access_token}`,

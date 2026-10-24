@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { withRetry } from './retry.mjs';
 
 const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -29,7 +30,9 @@ async function wrangler(args) {
   } catch (err) {
     const lines = (err.stderr || err.stdout || err.message).replace(/\x1b\[[0-9;]*m/g, '').split('\n');
     const errors = lines.filter((l) => /ERROR|✘/.test(l));
-    const detail = (errors.length ? errors : lines.slice(-5)).map((l) => l.trim()).filter(Boolean).join('\n');
+    const detail =
+      (errors.length ? errors : lines.slice(-5)).map((l) => l.trim()).filter(Boolean).join('\n') ||
+      `結束代碼 ${err.code ?? '?'}：${err.message.split('\n')[0]}`;
     throw new Error(`wrangler ${args.slice(0, 2).join(' ')} 失敗：\n${detail}`);
   }
 }
@@ -45,14 +48,18 @@ export function sqlValue(v) {
 }
 
 // 資料庫資訊，包含過去 24 小時的讀寫列數（rows_written_24h 等）
+// 讀取失敗會重試；寫入（executeStatements）不重試：萬一其實已寫入只是回應掉了，
+// 重試會撞到主鍵重複而失敗，不如讓下一輪掃描重新處理
 export async function info() {
-  const stdout = await wrangler(['d1', 'info', DATABASE, '--json']);
+  const stdout = await withRetry('讀取 D1 資訊', () => wrangler(['d1', 'info', DATABASE, '--json']));
   return JSON.parse(stdout.slice(stdout.indexOf('{')));
 }
 
 // 執行唯讀查詢，回傳每個敘述的結果列
 export async function query(sql) {
-  const stdout = await wrangler(['d1', 'execute', DATABASE, '--remote', '--json', '--command', sql]);
+  const stdout = await withRetry('D1 查詢', () =>
+    wrangler(['d1', 'execute', DATABASE, '--remote', '--json', '--command', sql])
+  );
   const json = JSON.parse(stdout.slice(stdout.indexOf('[')));
   return json.map((r) => r.results);
 }
