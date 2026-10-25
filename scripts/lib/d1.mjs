@@ -28,12 +28,17 @@ async function wrangler(args) {
     });
     return stdout;
   } catch (err) {
-    const lines = (err.stderr || err.stdout || err.message).replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+    const output = `${err.stderr ?? ''}\n${err.stdout ?? ''}`.replace(/\x1b\[[0-9;]*m/g, '');
+    // 加了 --json 時，D1 的錯誤是一段 JSON（例如超過每日額度的 code 7500），整段印出來
+    const jsonError = output.match(/\{[\s\S]*"code"[\s\S]*\}/)?.[0];
+    const lines = output.split('\n').map((l) => l.trim()).filter(Boolean);
     const errors = lines.filter((l) => /ERROR|✘/.test(l));
     const detail =
-      (errors.length ? errors : lines.slice(-5)).map((l) => l.trim()).filter(Boolean).join('\n') ||
+      jsonError?.replace(/\s+/g, ' ') ||
+      (errors.length ? errors : lines.slice(-8)).join(' | ') ||
       `結束代碼 ${err.code ?? '?'}：${err.message.split('\n')[0]}`;
-    throw new Error(`wrangler ${args.slice(0, 2).join(' ')} 失敗：\n${detail}`);
+    // 整段放在同一行，重試的紀錄（只印第一行）也看得到原因
+    throw new Error(`wrangler ${args.slice(0, 2).join(' ')} 失敗：${detail}`);
   }
 }
 
