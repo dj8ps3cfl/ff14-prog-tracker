@@ -1,7 +1,6 @@
 // 團滅分析：從 FFLogs 的 report（場次 + 死亡紀錄）整理出每場怎麼滅的、整份 report 最常死在哪
 //
-// 「第一個倒下」和「團滅原因」都是推測：第一個倒下的人不一定是犯錯的人，
-// 所以只整理事實（誰、何時、被什麼打死），不判定戰犯。
+// 重點放在「哪個機制」而不是「誰」：刻意不統計誰第一個倒下，免得變成找戰犯。
 
 // 這段時間內倒下這麼多人，就當成「開始團滅」
 const CASCADE_WINDOW_MS = 10_000;
@@ -25,9 +24,12 @@ function killingAbility(entry) {
   return abilities.reduce((best, a) => (!best || a.total > best.total ? a : best), null);
 }
 
+// 死前完全沒有傷害紀錄的死亡：被擊退或吹出場外、即死類的負面狀態、暗黑騎士行屍走肉結束等
+export const NON_DAMAGE_DEATH = '非傷害致死';
+
 // 台服資料裡只有英文名稱的技能，用技能編號查中文名稱；本來就是中文的保留台服譯名
 function displayName(ability, names) {
-  if (!ability?.name) return '不明';
+  if (!ability?.name) return NON_DAMAGE_DEATH;
   if (CJK.test(ability.name)) return ability.name;
   return names?.[ability.guid] ?? ability.name;
 }
@@ -67,7 +69,7 @@ function findCascade(deaths) {
 function summarizePull(fight, deaths) {
   const first = deaths[0] ?? null;
   const cascade = fight.kill ? null : findCascade(deaths);
-  // 團滅原因：有明顯的一波團滅就用那波的機制，否則用第一個倒下的人的致死技能
+  // 團滅原因：有明顯的一波團滅就用那波的機制，否則用最早一筆死亡的致死機制
   const cause = fight.kill
     ? null
     : cascade
@@ -87,7 +89,6 @@ function summarizePull(fight, deaths) {
     },
     duration: Math.round((fight.endTime - fight.startTime) / 1000),
     deaths,
-    first,
     cascade,
     cause,
   };
@@ -97,34 +98,32 @@ function rankMechanics(wipes) {
   const byKey = new Map();
   const get = (phase, ability) => {
     const key = `${phase}|${ability}`;
-    if (!byKey.has(key)) byKey.set(key, { phase, ability, wipes: 0, firstDeaths: 0, deaths: 0 });
+    if (!byKey.has(key)) byKey.set(key, { phase, ability, wipes: 0, deaths: 0 });
     return byKey.get(key);
   };
   for (const pull of wipes) {
     if (pull.cause) get(pull.cause.phase, pull.cause.ability).wipes++;
-    if (pull.first) get(pull.first.phase, pull.first.ability).firstDeaths++;
     for (const d of pull.deaths) get(d.phase, d.ability).deaths++;
   }
-  return [...byKey.values()].sort((a, b) => b.wipes - a.wipes || b.firstDeaths - a.firstDeaths || b.deaths - a.deaths);
+  return [...byKey.values()].sort((a, b) => b.wipes - a.wipes || b.deaths - a.deaths);
 }
 
 function rankPlayers(wipes) {
   const byName = new Map();
   for (const pull of wipes) {
-    pull.deaths.forEach((d, i) => {
-      if (!byName.has(d.name)) byName.set(d.name, { name: d.name, job: d.job, deaths: 0, firstDeaths: 0, abilities: new Map() });
+    for (const d of pull.deaths) {
+      if (!byName.has(d.name)) byName.set(d.name, { name: d.name, job: d.job, deaths: 0, abilities: new Map() });
       const p = byName.get(d.name);
       p.deaths++;
-      if (i === 0) p.firstDeaths++;
       p.abilities.set(d.ability, (p.abilities.get(d.ability) ?? 0) + 1);
-    });
+    }
   }
   return [...byName.values()]
     .map(({ abilities, ...p }) => {
       const [topAbility, topCount] = [...abilities].sort((a, b) => b[1] - a[1])[0];
       return { ...p, topAbility, topCount };
     })
-    .sort((a, b) => b.firstDeaths - a.firstDeaths || b.deaths - a.deaths);
+    .sort((a, b) => b.deaths - a.deaths);
 }
 
 // report 是 FFLogs reportData.report（含 fights 與 table）；names 是技能編號 → 中文名稱的對照表（可省略）

@@ -1,6 +1,6 @@
 // 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
 // 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
-import { analyzeReport, hasUntranslatedAbilities, parseReportCode } from './analysis.js';
+import { NON_DAMAGE_DEATH, analyzeReport, hasUntranslatedAbilities, parseReportCode } from './analysis.js';
 
 const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const API_BASE = LOCAL ? 'http://127.0.0.1:8811' : 'https://ff14-prog-api.dj8ps3cfl.workers.dev';
@@ -641,7 +641,9 @@ function bossView(code, boss) {
       ${mechanicTable(boss.mechanics)}
       <h3 class="sub-title">個人死亡統計</h3>
       ${playerTable(boss.players)}
-      <p class="note">排行只計算滅團的場次。第一個倒下的人不一定是失誤的人（例如坦克沒減傷、補師沒補到），請搭配 FFLogs 的死亡紀錄判斷。</p>
+      <p class="note">排行只計算滅團的場次。死亡次數多不代表失誤（例如坦克沒減傷、補師沒補到、被隊友的機制連帶），請搭配 FFLogs 的死亡紀錄判斷。</p>
+      ${boss.mechanics.some((m) => m.ability === NON_DAMAGE_DEATH) ? `
+        <p class="note">「${NON_DAMAGE_DEATH}」是死前完全沒有受到傷害的死亡，常見的是被擊退或吹出場外、即死類的負面狀態，或暗黑騎士的行屍走肉結束時沒被補滿。</p>` : ''}
     ` : ''}
 
     <h3 class="sub-title">每一場</h3>
@@ -649,18 +651,17 @@ function bossView(code, boss) {
 }
 
 function mechanicTable(mechanics) {
-  const rows = mechanics.filter((m) => m.wipes || m.firstDeaths).slice(0, 12);
+  const rows = mechanics.slice(0, 12);
   return `
     <div class="card table-card">
       <table class="data-table">
-        <thead><tr><th>階段</th><th>機制</th><th class="num">造成團滅</th><th class="num">第一個倒下</th><th class="num">死亡人次</th></tr></thead>
+        <thead><tr><th>階段</th><th>機制</th><th class="num">造成團滅</th><th class="num">死亡人次</th></tr></thead>
         <tbody>
           ${rows.map((m, i) => `
             <tr>
               <td><span class="phase-tag">P${m.phase}</span></td>
               <td class="strong">${escapeHtml(m.ability)}</td>
               <td class="num ${i === 0 && m.wipes ? 'hot' : ''}">${m.wipes} 次</td>
-              <td class="num">${m.firstDeaths} 次</td>
               <td class="num">${m.deaths}</td>
             </tr>`).join('')}
         </tbody>
@@ -672,13 +673,12 @@ function playerTable(players) {
   return `
     <div class="card table-card">
       <table class="data-table">
-        <thead><tr><th>玩家</th><th>職業</th><th class="num">第一個倒下</th><th class="num">死亡</th><th>最常死於</th></tr></thead>
+        <thead><tr><th>玩家</th><th>職業</th><th class="num">死亡</th><th>最常死於</th></tr></thead>
         <tbody>
           ${players.map((p) => `
             <tr>
               <td class="strong">${escapeHtml(p.name)}</td>
               <td>${jobBadge(p.job)}</td>
-              <td class="num">${p.firstDeaths} 次</td>
               <td class="num">${p.deaths} 次</td>
               <td>${escapeHtml(p.topAbility)}<span class="phase-wiped">（${p.topCount}）</span></td>
             </tr>`).join('')}
@@ -688,21 +688,17 @@ function playerTable(players) {
 }
 
 function pullCard(code, p) {
-  const first = p.first;
   const lines = [];
   if (!p.kill) {
+    const firstAt = p.deaths[0]?.at;
     lines.push([
       '團滅原因',
       p.cause
         ? `<span class="phase-tag">P${p.cause.phase}</span> <b>${escapeHtml(p.cause.ability)}</b>` +
-          (p.cascade ? `<span class="phase-wiped">（${p.cascade.deaths} 人在 10 秒內倒下）</span>` : '')
+          (p.cascade
+            ? `<span class="phase-wiped">（${fmtClock(p.cascade.at)} 起 10 秒內倒下 ${p.cascade.deaths} 人）</span>`
+            : `<span class="phase-wiped">（${fmtClock(firstAt)} 開始有人倒下）</span>`)
         : '<span class="phase-wiped">沒有人倒下（可能是重開或時間到）</span>',
-    ]);
-  }
-  if (first) {
-    lines.push([
-      '第一個倒下',
-      `${jobBadge(first.job)} ${escapeHtml(first.name)} <span class="phase-wiped">· P${first.phase} ${fmtClock(first.at)} ·</span> ${escapeHtml(first.ability)}`,
     ]);
   }
   return `
