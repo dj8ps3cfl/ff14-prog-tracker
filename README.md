@@ -74,6 +74,10 @@ node scripts/scan.mjs --max-points 200          # 限制這次最多用多少 FF
 
 `docs/` 底下的靜態網頁（不需要 build），從 Worker API 讀資料。
 
+團滅分析（`#/analyze`）：貼上 FFLogs report 網址後，Worker 的 `/analyze` 向 FFLogs 取回場次與死亡紀錄，分析在瀏覽器裡做（`docs/analysis.js`），依 Boss 分開統計。Worker 需要 `FFLOGS_CLIENT_ID`、`FFLOGS_CLIENT_SECRET` 兩個 secret（`npx wrangler secret put <名稱>`）。
+
+台服資料裡只有英文的技能名稱，會用 `docs/data/action-names.json`（技能編號 → 國服名稱轉繁體）換成中文。新版本副本開放後重新產生：`npm run build:action-names`。
+
 本機開發：先把遠端資料匯出到本機 D1，再 `npm run dev`（API 在 8811、網頁在 8812，本機不快取）：
 
 ```bash

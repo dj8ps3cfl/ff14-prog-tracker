@@ -9,11 +9,13 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "build:action-names": "node scripts/build-action-names.mjs",
     "probe": "node scripts/probe.mjs",
     "scan": "node scripts/scan.mjs",
     "backfill": "node scripts/scan.mjs backfill"
   },
   "devDependencies": {
+    "opencc-js": "1.4.2",
     "wrangler": "4.151.3"
   }
 }

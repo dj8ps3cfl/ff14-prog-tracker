@@ -16,22 +16,38 @@ function phaseAt(fight, t) {
   return phase;
 }
 
+const CJK = /[㐀-鿿]/;
+
 // 致死技能：優先用 FFLogs 判定的最後一擊，沒有的話（例如死於持續傷害）用死前受到傷害最多的技能
 function killingAbility(entry) {
-  if (entry.killingBlow?.name) return entry.killingBlow.name;
+  if (entry.killingBlow?.name) return entry.killingBlow;
   const abilities = entry.damage?.abilities ?? [];
-  const top = abilities.reduce((best, a) => (!best || a.total > best.total ? a : best), null);
-  return top?.name ?? '不明';
+  return abilities.reduce((best, a) => (!best || a.total > best.total ? a : best), null);
 }
 
-function toDeath(entry, fight) {
+// 台服資料裡只有英文名稱的技能，用技能編號查中文名稱；本來就是中文的保留台服譯名
+function displayName(ability, names) {
+  if (!ability?.name) return '不明';
+  if (CJK.test(ability.name)) return ability.name;
+  return names?.[ability.guid] ?? ability.name;
+}
+
+function toDeath(entry, fight, names) {
   return {
     name: entry.name,
     job: entry.type,
     at: entry.timestamp - fight.startTime,
     phase: phaseAt(fight, entry.timestamp),
-    ability: killingAbility(entry),
+    ability: displayName(killingAbility(entry), names),
   };
+}
+
+// 這份 report 的死亡紀錄裡有沒有英文的致死技能（有的話才需要載入中文對照表）
+export function hasUntranslatedAbilities(report) {
+  return (report.table?.data?.entries ?? []).some((e) => {
+    const name = killingAbility(e)?.name;
+    return name && !CJK.test(name);
+  });
 }
 
 // 找出第一個「10 秒內倒下 3 人以上」的時間點，以及那波死亡最常見的致死技能
@@ -111,22 +127,51 @@ function rankPlayers(wipes) {
     .sort((a, b) => b.firstDeaths - a.firstDeaths || b.deaths - a.deaths);
 }
 
-// report 是 FFLogs reportData.report（含 fights 與 table）
-export function analyzeReport(report) {
+// report 是 FFLogs reportData.report（含 fights 與 table）；names 是技能編號 → 中文名稱的對照表（可省略）
+export function analyzeReport(report, names) {
   const fights = (report.fights ?? []).filter((f) => f.encounterID);
   const deathsByFight = new Map(fights.map((f) => [f.id, []]));
   const fightById = new Map(fights.map((f) => [f.id, f]));
   for (const entry of report.table?.data?.entries ?? []) {
     const fight = fightById.get(entry.fight);
-    if (fight) deathsByFight.get(fight.id).push(toDeath(entry, fight));
+    if (fight) deathsByFight.get(fight.id).push(toDeath(entry, fight, names));
   }
-  const pulls = fights.map((f) => summarizePull(f, deathsByFight.get(f.id).sort((a, b) => a.at - b.at)));
+  const pulls = fights.map((f) => ({
+    ...summarizePull(f, deathsByFight.get(f.id).sort((a, b) => a.at - b.at)),
+    encounterID: f.encounterID,
+    bossName: f.name,
+  }));
+
+  // 同一份 report 可能連打好幾隻王，機制和個人統計要依 Boss 分開算，照第一次打的順序排
+  const bosses = [];
+  for (const pull of pulls) {
+    let boss = bosses.find((b) => b.encounterID === pull.encounterID);
+    if (!boss) bosses.push((boss = { encounterID: pull.encounterID, name: pull.bossName, pulls: [] }));
+    boss.pulls.push(pull);
+  }
+  return {
+    pulls,
+    wipes: pulls.filter((p) => !p.kill).length,
+    kills: pulls.filter((p) => p.kill).length,
+    bosses: bosses.map((b) => summarizeBoss(b)),
+  };
+}
+
+function summarizeBoss({ encounterID, name, pulls }) {
   // 排行只看滅團的場次，通關那場有人倒下不算團滅原因
   const wipes = pulls.filter((p) => !p.kill);
+  const best = pulls.reduce(
+    (b, p) => (!b || (p.kill && !b.kill) || (!b.kill && !p.kill && (p.progress.pct ?? 100) < (b.progress.pct ?? 100)) ? p : b),
+    null
+  );
   return {
+    encounterID,
+    name,
     pulls,
     wipes: wipes.length,
     kills: pulls.length - wipes.length,
+    deaths: wipes.reduce((sum, p) => sum + p.deaths.length, 0),
+    best: best.progress,
     mechanics: rankMechanics(wipes),
     players: rankPlayers(wipes),
   };

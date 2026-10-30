@@ -1,6 +1,6 @@
 // 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
 // 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
-import { analyzeReport, parseReportCode } from './analysis.js';
+import { analyzeReport, hasUntranslatedAbilities, parseReportCode } from './analysis.js';
 
 const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const API_BASE = LOCAL ? 'http://127.0.0.1:8811' : 'https://ff14-prog-api.dj8ps3cfl.workers.dev';
@@ -499,6 +499,15 @@ async function loadPulls(box, player, encounter, before) {
 const fmtClock = (ms) => fmtDuration(Math.max(0, Math.round(ms / 1000)));
 const reportUrl = (code) => `https://www.fflogs.com/reports/${code}`;
 
+// 技能編號 → 中文名稱的對照表（約 300KB），只有分析結果裡有英文技能名稱時才載入，載入一次就重複使用
+let actionNames = null;
+function loadActionNames() {
+  actionNames ??= fetch('data/action-names.json')
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null);
+  return actionNames;
+}
+
 function renderAnalyzePage(code, token) {
   document.title = '團滅分析 | 開荒進度';
   app.innerHTML = `
@@ -557,19 +566,37 @@ async function runAnalysis(code, token) {
     if (token === renderToken) box.innerHTML = `<p class="notice error">${escapeHtml(err.message)}</p>`;
     return;
   }
+  // 對照表載入失敗就顯示原本的英文名稱，不影響分析
+  const names = hasUntranslatedAbilities(report) ? await loadActionNames() : null;
   if (token !== renderToken) return;
-  const result = analyzeReport(report);
+  const result = analyzeReport(report, names);
   if (!result.pulls.length) {
     box.innerHTML = '<p class="notice">這份 report 裡沒有 Boss 戰。</p>';
     return;
   }
   document.title = `${report.title} 團滅分析 | 開荒進度`;
   box.innerHTML = analysisView(report, result);
+
+  // 好幾隻王時用分頁切換，預設顯示打最多場的那隻
+  const bosses = result.bosses;
+  const show = (encounterID) => {
+    const boss = bosses.find((b) => b.encounterID === encounterID);
+    box.querySelector('#boss-view').innerHTML = bossView(report.code, boss);
+    box.querySelectorAll('[data-boss]').forEach((tab) => {
+      const selected = Number(tab.dataset.boss) === encounterID;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+    });
+  };
+  box.querySelectorAll('[data-boss]').forEach((tab) => tab.addEventListener('click', () => show(Number(tab.dataset.boss))));
+  show(bosses.reduce((a, b) => (b.pulls.length > a.pulls.length ? b : a)).encounterID);
 }
 
+// 有對到我們追蹤的副本就用中文名稱（例如 M8S 呼嘯之劍），否則用 FFLogs 的名稱
+const bossLabel = (boss) => encounters.find((e) => e.id === boss.encounterID)?.name ?? boss.name;
+
 function analysisView(report, result) {
-  const totalDeaths = result.pulls.filter((p) => !p.kill).reduce((sum, p) => sum + p.deaths.length, 0);
-  const best = result.pulls.reduce((b, p) => (!b || (p.kill && !b.kill) || (!b.kill && (p.progress.pct ?? 100) < (b.progress.pct ?? 100)) ? p : b), null);
+  const bosses = result.bosses;
   return `
     <section class="report-card card">
       <div class="report-head">
@@ -580,24 +607,45 @@ function analysisView(report, result) {
         <a href="${reportUrl(report.code)}" target="_blank" rel="noopener">在 FFLogs 開啟 ↗</a>
       </div>
       <div class="player-stats">
+        <div class="stat"><b>${bosses.length}</b><span>Boss</span></div>
         <div class="stat"><b>${result.pulls.length}</b><span>場數</span></div>
         <div class="stat"><b>${result.wipes}</b><span>滅團</span></div>
         <div class="stat"><b>${result.kills}</b><span>通關</span></div>
-        <div class="stat"><b>${totalDeaths}</b><span>滅團時死亡人次</span></div>
       </div>
-      <p class="note">最佳進度：${escapeHtml(progressLabel(best.progress))}</p>
     </section>
 
-    ${result.wipes ? `
-      <h2 class="section-title">最常造成團滅的機制</h2>
-      ${mechanicTable(result.mechanics)}
-      <h2 class="section-title">個人死亡統計</h2>
-      ${playerTable(result.players)}
+    ${bosses.length > 1 ? `
+      <div class="boss-tabs" role="tablist" aria-label="Boss">
+        ${bosses.map((b) => `
+          <button class="boss-tab" type="button" role="tab" data-boss="${b.encounterID}">
+            <span class="boss-tab-name">${escapeHtml(bossLabel(b))}</span>
+            <span class="boss-tab-meta ${b.kills ? 'kill' : ''}">${b.kills ? '通關' : escapeHtml(progressLabel(b.best))}・${b.pulls.length} 場</span>
+          </button>`).join('')}
+      </div>` : ''}
+    <div id="boss-view"></div>`;
+}
+
+function bossView(code, boss) {
+  return `
+    <h2 class="section-title">${escapeHtml(bossLabel(boss))}</h2>
+    <div class="player-stats boss-stats">
+      <div class="stat"><b>${boss.pulls.length}</b><span>場數</span></div>
+      <div class="stat"><b>${boss.wipes}</b><span>滅團</span></div>
+      <div class="stat"><b>${boss.kills}</b><span>通關</span></div>
+      <div class="stat"><b>${boss.deaths}</b><span>滅團時死亡人次</span></div>
+    </div>
+    <p class="note">最佳進度：${escapeHtml(progressLabel(boss.best))}</p>
+
+    ${boss.wipes ? `
+      <h3 class="sub-title">最常造成團滅的機制</h3>
+      ${mechanicTable(boss.mechanics)}
+      <h3 class="sub-title">個人死亡統計</h3>
+      ${playerTable(boss.players)}
       <p class="note">排行只計算滅團的場次。第一個倒下的人不一定是失誤的人（例如坦克沒減傷、補師沒補到），請搭配 FFLogs 的死亡紀錄判斷。</p>
     ` : ''}
 
-    <h2 class="section-title">每一場</h2>
-    <ol class="wipe-list">${result.pulls.map((p) => pullCard(report.code, p)).join('')}</ol>`;
+    <h3 class="sub-title">每一場</h3>
+    <ol class="wipe-list">${boss.pulls.map((p) => pullCard(code, p)).join('')}</ol>`;
 }
 
 function mechanicTable(mechanics) {

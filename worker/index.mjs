@@ -198,13 +198,13 @@ const ANALYZE_POINTS_CEILING = 940;
 // 同一份 report 15 分鐘內再分析就用快取，不再花點數（直播上傳中的 report 也會在 15 分鐘後更新）
 const ANALYZE_CACHE_SECONDS = 900;
 
-// 一次查詢拿齊：場次、階段切換時間、整份 report 的死亡紀錄（translate: false 才會是台服的中文技能名）
+// 一次查詢拿齊：場次、階段切換時間、整份 report 的死亡紀錄（translate: false 才會是台服的中文 Boss 名和技能名）
 const ANALYZE_QUERY = `query ($code: String) {
   reportData {
     report(code: $code) {
       code title startTime endTime
       zone { name }
-      fights(killType: Encounters) {
+      fights(killType: Encounters, translate: false) {
         id encounterID name kill lastPhase lastPhaseIsIntermission bossPercentage fightPercentage
         startTime endTime phaseTransitions { id startTime }
       }
