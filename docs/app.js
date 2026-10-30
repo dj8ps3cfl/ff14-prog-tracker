@@ -1,5 +1,6 @@
-// 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）
-// 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁
+// 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
+// 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
+import { analyzeReport, parseReportCode } from './analysis.js';
 
 const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const API_BASE = LOCAL ? 'http://127.0.0.1:8811' : 'https://ff14-prog-api.dj8ps3cfl.workers.dev';
@@ -20,7 +21,8 @@ const JOBS = {
 
 const SEARCH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" stroke-linecap="round" /></svg>`;
 const CRYSTAL_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1 19 9 12 23 5 9Z" fill="currentColor" /></svg>`;
-const SHARE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" stroke-linecap="round" /></svg>`;
+const LINK_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" stroke-linecap="round" /><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" stroke-linecap="round" /></svg>`;
+const SHARE_ICON =`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" stroke-linecap="round" /></svg>`;
 const CHECK_ICON =`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m5 12 5 5 9-10" stroke-linecap="round" stroke-linejoin="round" /></svg>`;
 
 const app = document.getElementById('app');
@@ -492,13 +494,203 @@ async function loadPulls(box, player, encounter, before) {
   }
 }
 
+// ---------- 團滅分析 ----------
+
+const fmtClock = (ms) => fmtDuration(Math.max(0, Math.round(ms / 1000)));
+const reportUrl = (code) => `https://www.fflogs.com/reports/${code}`;
+
+function renderAnalyzePage(code, token) {
+  document.title = '團滅分析 | 開荒進度';
+  app.innerHTML = `
+    <section class="hero compact">
+      <p class="hero-eyebrow">FFLOGS REPORT</p>
+      <h1>團滅分析</h1>
+      <div class="hero-divider">${CRYSTAL_ICON}</div>
+      <p class="hero-desc">貼上 FFLogs 的 report 網址，整理出每一場是怎麼滅的、誰先倒下、最常死在哪個機制。</p>
+      <form class="analyze-form" id="analyze-form">
+        <label class="search-field">
+          ${LINK_ICON}
+          <input name="url" placeholder="https://www.fflogs.com/reports/..." autocomplete="off" aria-label="FFLogs report 網址"
+            value="${code ? escapeHtml(reportUrl(code)) : ''}" />
+        </label>
+        <button class="btn btn-primary" type="submit">分析</button>
+      </form>
+      <p class="form-error" id="analyze-error" hidden></p>
+    </section>
+    <div id="analysis"></div>`;
+
+  const form = app.querySelector('#analyze-form');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const parsed = parseReportCode(form.url.value);
+    const error = app.querySelector('#analyze-error');
+    if (!parsed) {
+      error.textContent = '看不懂這個網址，請貼上像 https://www.fflogs.com/reports/AbCd1234EfGh5678 這樣的 report 網址';
+      error.hidden = false;
+      return;
+    }
+    error.hidden = true;
+    // 換成帶代碼的網址，分析結果可以直接分享
+    if (location.hash !== `#/analyze/${parsed}`) location.hash = `#/analyze/${parsed}`;
+    else runAnalysis(parsed, renderToken);
+  });
+  if (code) runAnalysis(code, token);
+  else form.url.focus();
+}
+
+async function runAnalysis(code, token) {
+  const box = document.getElementById('analysis');
+  box.innerHTML = '<p class="notice">向 FFLogs 讀取中…場次很多的 report 可能要十幾秒</p>';
+  let report;
+  try {
+    const body = await api(`/analyze?code=${code}`);
+    report = body.data?.reportData?.report;
+    if (!report) {
+      const reason = body.errors?.[0]?.message ?? '';
+      throw new Error(
+        /permission|private|exist/i.test(reason) || !reason
+          ? '找不到這份 report，可能是 private、已刪除，或網址打錯了'
+          : reason
+      );
+    }
+  } catch (err) {
+    if (token === renderToken) box.innerHTML = `<p class="notice error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  if (token !== renderToken) return;
+  const result = analyzeReport(report);
+  if (!result.pulls.length) {
+    box.innerHTML = '<p class="notice">這份 report 裡沒有 Boss 戰。</p>';
+    return;
+  }
+  document.title = `${report.title} 團滅分析 | 開荒進度`;
+  box.innerHTML = analysisView(report, result);
+}
+
+function analysisView(report, result) {
+  const totalDeaths = result.pulls.filter((p) => !p.kill).reduce((sum, p) => sum + p.deaths.length, 0);
+  const best = result.pulls.reduce((b, p) => (!b || (p.kill && !b.kill) || (!b.kill && (p.progress.pct ?? 100) < (b.progress.pct ?? 100)) ? p : b), null);
+  return `
+    <section class="report-card card">
+      <div class="report-head">
+        <div>
+          <h2>${escapeHtml(report.title)}</h2>
+          <p>${escapeHtml(report.zone?.name ?? '')} · ${fmtDate(report.startTime)}</p>
+        </div>
+        <a href="${reportUrl(report.code)}" target="_blank" rel="noopener">在 FFLogs 開啟 ↗</a>
+      </div>
+      <div class="player-stats">
+        <div class="stat"><b>${result.pulls.length}</b><span>場數</span></div>
+        <div class="stat"><b>${result.wipes}</b><span>滅團</span></div>
+        <div class="stat"><b>${result.kills}</b><span>通關</span></div>
+        <div class="stat"><b>${totalDeaths}</b><span>滅團時死亡人次</span></div>
+      </div>
+      <p class="note">最佳進度：${escapeHtml(progressLabel(best.progress))}</p>
+    </section>
+
+    ${result.wipes ? `
+      <h2 class="section-title">最常造成團滅的機制</h2>
+      ${mechanicTable(result.mechanics)}
+      <h2 class="section-title">個人死亡統計</h2>
+      ${playerTable(result.players)}
+      <p class="note">排行只計算滅團的場次。第一個倒下的人不一定是失誤的人（例如坦克沒減傷、補師沒補到），請搭配 FFLogs 的死亡紀錄判斷。</p>
+    ` : ''}
+
+    <h2 class="section-title">每一場</h2>
+    <ol class="wipe-list">${result.pulls.map((p) => pullCard(report.code, p)).join('')}</ol>`;
+}
+
+function mechanicTable(mechanics) {
+  const rows = mechanics.filter((m) => m.wipes || m.firstDeaths).slice(0, 12);
+  return `
+    <div class="card table-card">
+      <table class="data-table">
+        <thead><tr><th>階段</th><th>機制</th><th class="num">造成團滅</th><th class="num">第一個倒下</th><th class="num">死亡人次</th></tr></thead>
+        <tbody>
+          ${rows.map((m, i) => `
+            <tr>
+              <td><span class="phase-tag">P${m.phase}</span></td>
+              <td class="strong">${escapeHtml(m.ability)}</td>
+              <td class="num ${i === 0 && m.wipes ? 'hot' : ''}">${m.wipes} 次</td>
+              <td class="num">${m.firstDeaths} 次</td>
+              <td class="num">${m.deaths}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function playerTable(players) {
+  return `
+    <div class="card table-card">
+      <table class="data-table">
+        <thead><tr><th>玩家</th><th>職業</th><th class="num">第一個倒下</th><th class="num">死亡</th><th>最常死於</th></tr></thead>
+        <tbody>
+          ${players.map((p) => `
+            <tr>
+              <td class="strong">${escapeHtml(p.name)}</td>
+              <td>${jobBadge(p.job)}</td>
+              <td class="num">${p.firstDeaths} 次</td>
+              <td class="num">${p.deaths} 次</td>
+              <td>${escapeHtml(p.topAbility)}<span class="phase-wiped">（${p.topCount}）</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function pullCard(code, p) {
+  const first = p.first;
+  const lines = [];
+  if (!p.kill) {
+    lines.push([
+      '團滅原因',
+      p.cause
+        ? `<span class="phase-tag">P${p.cause.phase}</span> <b>${escapeHtml(p.cause.ability)}</b>` +
+          (p.cascade ? `<span class="phase-wiped">（${p.cascade.deaths} 人在 10 秒內倒下）</span>` : '')
+        : '<span class="phase-wiped">沒有人倒下（可能是重開或時間到）</span>',
+    ]);
+  }
+  if (first) {
+    lines.push([
+      '第一個倒下',
+      `${jobBadge(first.job)} ${escapeHtml(first.name)} <span class="phase-wiped">· P${first.phase} ${fmtClock(first.at)} ·</span> ${escapeHtml(first.ability)}`,
+    ]);
+  }
+  return `
+    <li class="wipe card ${p.kill ? 'is-kill' : ''}">
+      <div class="wipe-head">
+        <span class="wipe-no">#${p.id}</span>
+        <span class="wipe-time">${fmtDuration(p.duration)}</span>
+        <span class="status ${p.kill ? 'kill' : ''}">${p.kill ? CHECK_ICON : ''}${escapeHtml(progressLabel(p.progress))}</span>
+      </div>
+      ${lines.length ? `<dl class="wipe-lines">${lines.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
+      ${p.deaths.length ? `
+        <details>
+          <summary>死亡順序（${p.deaths.length} 人）</summary>
+          <ol class="death-order">
+            ${p.deaths.map((d) => `<li><span class="t">${fmtClock(d.at)}</span><span class="phase-tag">P${d.phase}</span> ${jobBadge(d.job)} ${escapeHtml(d.name)} — ${escapeHtml(d.ability)}</li>`).join('')}
+          </ol>
+        </details>` : ''}
+      <div class="enc-actions">
+        <a href="${escapeHtml(fightUrl(code, p.id))}" target="_blank" rel="noopener">這場的死亡紀錄 ↗</a>
+      </div>
+    </li>`;
+}
+
+const fightUrl = (code, fight) => `https://www.fflogs.com/reports/${code}#fight=${fight}&type=deaths`;
+
 // ---------- 路由 ----------
 
 async function route() {
   const token = ++renderToken;
   window.scrollTo(0, 0);
+  const analyzeMatch = location.hash.match(/^#\/analyze(?:\/([A-Za-z0-9]{16}))?$/);
+  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', Boolean(analyzeMatch)));
   const match = location.hash.match(/^#\/p\/([^/]+)\/(.+)$/);
-  if (match) {
+  if (analyzeMatch) {
+    renderAnalyzePage(analyzeMatch[1], token);
+  } else if (match) {
     await renderPlayer(decodeURIComponent(match[1]), decodeURIComponent(match[2]), token);
   } else {
     document.title = '開荒進度 | FFXIV 繁中服';

@@ -6,6 +6,8 @@
 //   GET /player?name=<角色名>&server=<伺服器>  角色的各副本進度與每日進度
 //   GET /pulls?player=<id>&encounter=<id>[&before=<上一頁的 next>]
 //                                         角色在某副本的每一場 pull，依開打時間新到舊，每頁 100 筆
+//   GET /analyze?code=<report code>       團滅分析用：把 FFLogs 上這份 report 的場次與死亡紀錄原樣轉給網頁，
+//                                         分析在瀏覽器做（免費方案的 Worker 每次只有 10 毫秒 CPU，解析不了大 report）
 import config from '../config/tracked.json';
 import { jobName, serverCode, serverName } from '../shared/codes.mjs';
 
@@ -186,7 +188,83 @@ async function pulls(db, params) {
   });
 }
 
+// ---------- 團滅分析（轉送 FFLogs） ----------
+
+const FFLOGS_TOKEN_URL = 'https://www.fflogs.com/oauth/token';
+const FFLOGS_API_URL = 'https://www.fflogs.com/api/v2/client';
+const REPORT_CODE = /^[A-Za-z0-9]{16}$/;
+// 跟掃描排程共用 FFLogs 每小時 1000 點的額度；本小時已用超過這個數字就先不分析，免得撞到 FFLogs 的上限
+const ANALYZE_POINTS_CEILING = 940;
+// 同一份 report 15 分鐘內再分析就用快取，不再花點數（直播上傳中的 report 也會在 15 分鐘後更新）
+const ANALYZE_CACHE_SECONDS = 900;
+
+// 一次查詢拿齊：場次、階段切換時間、整份 report 的死亡紀錄（translate: false 才會是台服的中文技能名）
+const ANALYZE_QUERY = `query ($code: String) {
+  reportData {
+    report(code: $code) {
+      code title startTime endTime
+      zone { name }
+      fights(killType: Encounters) {
+        id encounterID name kill lastPhase lastPhaseIsIntermission bossPercentage fightPercentage
+        startTime endTime phaseTransitions { id startTime }
+      }
+      table(dataType: Deaths, killType: Encounters, startTime: 0, endTime: 100000000000, translate: false)
+    }
+  }
+}`;
+
+// client credentials 的 token 有效一年，同一個 Worker 執行個體裡重複使用
+let fflogsToken = null;
+
+async function getFflogsToken(env) {
+  if (fflogsToken && fflogsToken.expiresAt > Date.now() + 60_000) return fflogsToken.value;
+  const res = await fetch(FFLOGS_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + btoa(`${env.FFLOGS_CLIENT_ID}:${env.FFLOGS_CLIENT_SECRET}`),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+  if (!res.ok) throw new Error(`取得 FFLogs token 失敗：HTTP ${res.status}`);
+  const body = await res.json();
+  fflogsToken = { value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
+  return fflogsToken.value;
+}
+
+async function fflogsRequest(env, query, variables = {}) {
+  return fetch(FFLOGS_API_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${await getFflogsToken(env)}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+}
+
+async function analyze(db, params, env) {
+  const code = params.get('code') ?? '';
+  if (!REPORT_CODE.test(code)) return json({ error: 'report 代碼格式不對，應該是 16 個英數字' }, 400);
+  if (!env.FFLOGS_CLIENT_ID || !env.FFLOGS_CLIENT_SECRET) return json({ error: '伺服器還沒設定 FFLogs 金鑰' }, 500);
+
+  const rate = await (await fflogsRequest(env, '{ rateLimitData { pointsSpentThisHour pointsResetIn } }')).json();
+  const { pointsSpentThisHour, pointsResetIn } = rate.data?.rateLimitData ?? {};
+  if (pointsSpentThisHour > ANALYZE_POINTS_CEILING) {
+    return json({ error: `FFLogs 這個小時的查詢額度快用完了，請 ${Math.ceil(pointsResetIn / 60)} 分鐘後再試` }, 429);
+  }
+
+  const res = await fflogsRequest(env, ANALYZE_QUERY, { code });
+  if (!res.ok) return json({ error: `FFLogs 回應錯誤：HTTP ${res.status}` }, 502);
+  // 不解析，直接轉送；report 不存在或是 private 時，網頁會從回應內容判斷
+  return new Response(res.body, {
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': `public, max-age=${ANALYZE_CACHE_SECONDS}`,
+    },
+  });
+}
+
 const ROUTES = {
+  '/analyze': analyze,
   '/encounters': async () => json({ encounters: ENCOUNTERS }),
   '/search': search,
   '/player': player,
@@ -240,7 +318,7 @@ export default {
 
     let response;
     try {
-      response = await handler(env.DB, url.searchParams);
+      response = await handler(env.DB, url.searchParams, env);
     } catch (err) {
       console.error(err);
       return json({ error: '伺服器錯誤' }, 500);
