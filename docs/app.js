@@ -778,12 +778,12 @@ function bossView(code, boss, hpState) {
       <p class="note">血量是每次挑戰結束前最後一下打在王身上時的剩餘血量；結束前一分鐘都沒人打到王的，查不到血量。</p>
     ` : ''}
 
-    ${boss.wipes ? `
+    ${boss.mechanics.length ? `
       <h3 class="sub-title">最常造成團滅的機制</h3>
       ${mechanicTable(boss.mechanics)}
       <h3 class="sub-title">個人死亡統計</h3>
       ${playerTable(boss.players)}
-      <p class="note">排行只計算滅團的場次。死亡次數多不代表失誤（例如坦克沒減傷、補師沒補到、被隊友的機制連帶），請搭配 FFLogs 的死亡紀錄判斷。</p>
+      <p class="note">排行只計算滅團那幾次的死亡（迷宮重打同一隻王時每次分開算）。死亡次數多不代表失誤（例如坦克沒減傷、補師沒補到、被隊友的機制連帶），請搭配 FFLogs 的死亡紀錄判斷。</p>
       ${boss.mechanics.some((m) => m.ability.endsWith(CN_NAME_MARK)) ? `
         <p class="note">名稱後面有「${CN_NAME_MARK}」的是國服譯名：繁中服的遊戲資料裡還查不到這個技能的官方譯名（新副本常見），遊戲裡的名稱可能不一樣。</p>` : ''}
       ${boss.mechanics.some((m) => m.ability === NON_DAMAGE_DEATH) ? `
@@ -831,20 +831,20 @@ function playerTable(players) {
     </div>`;
 }
 
+// 一次滅團的原因，例如「P2 定住人的意念（5:28 起 10 秒內倒下 3 人）」
+function wipeCauseHtml({ cause }) {
+  if (!cause) return '<span class="phase-wiped">沒有人倒下（可能是重開或時間到）</span>';
+  return (
+    `<span class="phase-tag">${escapeHtml(cause.stage)}</span> <b>${escapeHtml(cause.ability)}</b>` +
+    (cause.deaths
+      ? `<span class="phase-wiped">（${fmtClock(cause.at)} 起 10 秒內倒下 ${cause.deaths} 人）</span>`
+      : `<span class="phase-wiped">（${fmtClock(cause.at)} 開始有人倒下）</span>`)
+  );
+}
+
 function pullCard(code, p) {
-  const lines = [];
-  if (!p.kill) {
-    const firstAt = p.deaths[0]?.at;
-    lines.push([
-      '團滅原因',
-      p.cause
-        ? `<span class="phase-tag">${escapeHtml(p.cause.stage)}</span> <b>${escapeHtml(p.cause.ability)}</b>` +
-          (p.cascade
-            ? `<span class="phase-wiped">（${fmtClock(p.cascade.at)} 起 10 秒內倒下 ${p.cascade.deaths} 人）</span>`
-            : `<span class="phase-wiped">（${fmtClock(firstAt)} 開始有人倒下）</span>`)
-        : '<span class="phase-wiped">沒有人倒下（可能是重開或時間到）</span>',
-    ]);
-  }
+  // 迷宮同一場裡滅了好幾次時，每次各一行
+  const lines = p.wipes.map((w, i) => [p.wipes.length > 1 ? `第 ${i + 1} 次團滅` : '團滅原因', wipeCauseHtml(w)]);
   return `
     <li class="wipe card ${p.kill ? 'is-kill' : ''}">
       <div class="wipe-head">

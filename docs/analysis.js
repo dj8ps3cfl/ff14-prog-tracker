@@ -32,7 +32,7 @@ function dungeonSegments(fight) {
           label: `${ordinal(bossNo.get(p.encounterID))}王 ${p.name}`,
           boss: { encounterID: p.encounterID, kill: Boolean(p.kill), enemies: (p.enemyNPCs ?? []).map((e) => e.id) },
         }
-      : { start: p.startTime, label: `${ordinal(bossNo.size + 1)}王前小怪` };
+      : { start: p.startTime, end: p.endTime, label: `${ordinal(bossNo.size + 1)}王前小怪` };
   });
 }
 
@@ -129,18 +129,34 @@ function findCascade(deaths) {
   return null;
 }
 
+// 這場滅團的時間範圍（絕對時間）。一般副本沒通關就是整場；
+// 迷宮同一趟裡可能重打同一隻王好幾次，每次沒打倒的挑戰各算一次，最後倒在小怪的話也算一次
+function wipeWindows(fight, segments) {
+  if (!segments.length) return fight.kill ? [] : [{ start: fight.startTime, end: fight.endTime }];
+  // 挑戰結束的時間點跟最後一個人倒下差不多同時，多留 1 秒
+  const windows = segments.filter((s) => s.boss && !s.boss.kill).map((s) => ({ start: s.start, end: s.end + 1000 }));
+  const last = segments.at(-1);
+  // 倒在小怪：從那段小怪開始算；王打倒了卻沒通關（打完才全滅）：從王倒下之後算
+  if (!fight.kill && !(last.boss && !last.boss.kill)) {
+    windows.push({ start: last.boss ? last.end : last.start, end: fight.endTime });
+  }
+  return windows;
+}
+
+// 團滅原因：有明顯的一波團滅就用那波的機制，否則用最早一筆死亡的致死機制；沒人倒下回傳 null
+function wipeCause(deaths) {
+  const cascade = findCascade(deaths);
+  if (cascade) return { stage: cascade.stage, ability: cascade.ability, at: cascade.at, deaths: cascade.deaths };
+  const first = deaths[0];
+  return first ? { stage: first.stage, ability: first.ability, at: first.at, deaths: null } : null;
+}
+
 function summarizePull(fight, segments, deaths) {
   const stages = stagesReached(fight, segments);
-  const first = deaths[0] ?? null;
-  const cascade = fight.kill ? null : findCascade(deaths);
-  // 團滅原因：有明顯的一波團滅就用那波的機制，否則用最早一筆死亡的致死機制
-  const cause = fight.kill
-    ? null
-    : cascade
-      ? { stage: cascade.stage, ability: cascade.ability }
-      : first
-        ? { stage: first.stage, ability: first.ability }
-        : null;
+  const wipes = wipeWindows(fight, segments).map((w) => {
+    const inWindow = deaths.filter((d) => d.at >= w.start - fight.startTime && d.at <= w.end - fight.startTime);
+    return { at: w.start - fight.startTime, deaths: inWindow, cause: wipeCause(inWindow) };
+  });
   return {
     id: fight.id,
     kill: Boolean(fight.kill),
@@ -159,29 +175,29 @@ function summarizePull(fight, segments, deaths) {
     visits: stageVisits(fight, segments),
     duration: Math.round((fight.endTime - fight.startTime) / 1000),
     deaths,
-    cascade,
-    cause,
+    // 每一次滅團和那次的死亡；排行只算這些死亡（通關那段有人倒下不算）
+    wipes,
   };
 }
 
-function rankMechanics(wipes) {
+function rankMechanics(pulls) {
   const byKey = new Map();
   const get = (stage, ability) => {
     const key = `${stage}|${ability}`;
     if (!byKey.has(key)) byKey.set(key, { stage, ability, wipes: 0, deaths: 0 });
     return byKey.get(key);
   };
-  for (const pull of wipes) {
-    if (pull.cause) get(pull.cause.stage, pull.cause.ability).wipes++;
-    for (const d of pull.deaths) get(d.stage, d.ability).deaths++;
+  for (const wipe of pulls.flatMap((p) => p.wipes)) {
+    if (wipe.cause) get(wipe.cause.stage, wipe.cause.ability).wipes++;
+    for (const d of wipe.deaths) get(d.stage, d.ability).deaths++;
   }
   return [...byKey.values()].sort((a, b) => b.wipes - a.wipes || b.deaths - a.deaths);
 }
 
-function rankPlayers(wipes) {
+function rankPlayers(pulls) {
   const byName = new Map();
-  for (const pull of wipes) {
-    for (const d of pull.deaths) {
+  for (const wipe of pulls.flatMap((p) => p.wipes)) {
+    for (const d of wipe.deaths) {
       if (!byName.has(d.name)) byName.set(d.name, { name: d.name, job: d.job, deaths: 0, abilities: new Map() });
       const p = byName.get(d.name);
       p.deaths++;
@@ -240,22 +256,21 @@ export function analyzeReport(report, names) {
 }
 
 function summarizeBoss({ encounterID, name, pulls }) {
-  // 排行只看滅團的場次，通關那場有人倒下不算團滅原因
-  const wipes = pulls.filter((p) => !p.kill);
   const reach = (p) => (p.kill ? Infinity : p.progress.depth * 1000 + (100 - (p.progress.pct ?? 100)));
   const best = pulls.reduce((b, p) => (!b || reach(p) > reach(b) ? p : b), null);
   return {
     encounterID,
     name,
     pulls,
-    wipes: wipes.length,
-    kills: pulls.length - wipes.length,
-    deaths: wipes.reduce((sum, p) => sum + p.deaths.length, 0),
+    // 滅團次數：迷宮同一場重打同一隻王時每次都算
+    wipes: pulls.reduce((sum, p) => sum + p.wipes.length, 0),
+    kills: pulls.filter((p) => p.kill).length,
+    deaths: pulls.reduce((sum, p) => sum + p.wipes.reduce((n, w) => n + w.deaths.length, 0), 0),
     best: best.progress,
     stages: stageStats(pulls),
     dungeonBosses: dungeonBosses(pulls),
-    mechanics: rankMechanics(wipes),
-    players: rankPlayers(wipes),
+    mechanics: rankMechanics(pulls),
+    players: rankPlayers(pulls),
   };
 }
 
