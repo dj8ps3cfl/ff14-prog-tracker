@@ -19,19 +19,21 @@ const ORDINALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九']
 const ordinal = (n) => ORDINALS[n - 1] ?? String(n);
 
 // 迷宮類（例如異聞迷宮）整趟只算一個 encounter、沒有階段，改用 dungeonPulls 把每場拆成小怪和各隻王。
-// 回傳依時間排序的段落；一般副本回傳空陣列
+// 回傳依時間排序的段落；一般副本回傳空陣列。
+// 同一趟裡同一隻王滅了再打，會出現好幾段相同 encounterID 的段落，王的編號依第一次遇到的順序給
 function dungeonSegments(fight) {
-  let bosses = 0;
-  return (fight.dungeonPulls ?? []).map((p) =>
-    p.encounterID
+  const bossNo = new Map();
+  return (fight.dungeonPulls ?? []).map((p) => {
+    if (p.encounterID && !bossNo.has(p.encounterID)) bossNo.set(p.encounterID, bossNo.size + 1);
+    return p.encounterID
       ? {
           start: p.startTime,
           end: p.endTime,
-          label: `${ordinal(++bosses)}王 ${p.name}`,
+          label: `${ordinal(bossNo.get(p.encounterID))}王 ${p.name}`,
           boss: { encounterID: p.encounterID, kill: Boolean(p.kill), enemies: (p.enemyNPCs ?? []).map((e) => e.id) },
         }
-      : { start: p.startTime, label: `${ordinal(bosses + 1)}王前小怪` }
-  );
+      : { start: p.startTime, label: `${ordinal(bossNo.size + 1)}王前小怪` };
+  });
 }
 
 // 時間點 t 所在的階段名稱：迷宮用段落（還沒開打前算第一段），一般副本用 P1、P2…
@@ -46,6 +48,25 @@ function stageAt(fight, segments, t) {
 function stagesReached(fight, segments) {
   if (!segments.length) return Array.from({ length: fight.lastPhase ?? 0 }, (_, i) => `P${i + 1}`);
   return segments.map((s) => s.label).filter((label, i, all) => label !== all[i - 1]);
+}
+
+// 這場每一次進入階段、有沒有在那裡滅團。迷宮同一隻王滅了再打，每一次都算一次到達、一次滅團
+function stageVisits(fight, segments) {
+  const kill = Boolean(fight.kill);
+  if (!segments.length) {
+    const stages = stagesReached(fight, segments);
+    return stages.map((label, i) => ({ label, wiped: !kill && i === stages.length - 1 }));
+  }
+  const visits = [];
+  for (const s of segments) {
+    if (!s.boss && visits.at(-1)?.label === s.label) continue;
+    visits.push({ label: s.label, wiped: s.boss ? !s.boss.kill : false });
+  }
+  const last = visits.at(-1);
+  if (last && !kill) last.wiped = true;
+  // 通關那場最後一段一定是打倒的
+  if (last && kill) last.wiped = false;
+  return visits;
 }
 
 const CJK = /[㐀-鿿]/;
@@ -128,6 +149,7 @@ function summarizePull(fight, segments, deaths) {
           depth: 0,
         },
     stages,
+    visits: stageVisits(fight, segments),
     duration: Math.round((fight.endTime - fight.startTime) / 1000),
     deaths,
     cascade,
@@ -234,11 +256,11 @@ function summarizeBoss({ encounterID, name, pulls }) {
 function stageStats(pulls) {
   const byLabel = new Map();
   for (const pull of pulls) {
-    for (const label of pull.stages) {
+    for (const { label, wiped } of pull.visits) {
       if (!byLabel.has(label)) byLabel.set(label, { label, reached: 0, wiped: 0 });
       byLabel.get(label).reached++;
+      if (wiped) byLabel.get(label).wiped++;
     }
-    if (!pull.kill && pull.stages.length) byLabel.get(pull.stages.at(-1)).wiped++;
   }
   return [...byLabel.values()];
 }

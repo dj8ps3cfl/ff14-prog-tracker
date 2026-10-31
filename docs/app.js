@@ -681,7 +681,7 @@ function dungeonBossCards(code, boss) {
           <summary>每一次挑戰（${d.attempts.length} 次）</summary>
           <div class="table-wrap">
             <table class="pull-table">
-              <thead><tr><th>場次</th><th>開打</th><th>結果</th><th class="num">打了</th><th class="num"></th></tr></thead>
+              <thead><tr><th>第幾次（場次）</th><th>開打</th><th>結果</th><th class="num">打了</th><th class="num"></th></tr></thead>
               <tbody data-code="${escapeHtml(code)}"></tbody>
             </table>
           </div>
@@ -710,9 +710,9 @@ function fillDungeonBossCard(card, d, hpState) {
     })
     .join('');
   card.querySelector('tbody').innerHTML = d.attempts
-    .map((a) => `
+    .map((a, i) => `
       <tr>
-        <td>#${a.fight}</td>
+        <td>${i + 1}<span class="phase-wiped">（#${a.fight}）</span></td>
         <td>${fmtClock(a.at)}</td>
         <td class="result-cell ${countsAsKill(a, threshold) ? 'kill' : ''}">${attemptResult(a, hpState, threshold)}</td>
         <td class="num">${fmtDuration(a.duration)}</td>
