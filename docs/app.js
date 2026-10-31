@@ -56,6 +56,7 @@ const playerHash = (server, name) => `#/p/${encodeURIComponent(server)}/${encode
 function progressLabel(p) {
   if (p.kill) return '通關';
   const parts = [];
+  if (p.stage) parts.push(`打到${p.stage}`);
   if (p.phase) parts.push(`P${p.phase}${p.intermission ? ' 轉場' : ''}`);
   if (p.boss != null) parts.push(`Boss 剩 ${fmtPct(p.boss)}`);
   return parts.join(' · ') || '滅團';
@@ -377,22 +378,24 @@ function encounterCard(e, playerId) {
 }
 
 // 各階段到達次數的橫條圖，長度是佔總場數的比例
+// e.phases 的每一項可以帶 label（例如迷宮的「一王 Ketuduke」），沒有的話顯示 P1、P2…
 function phaseChart(e) {
   if (!e.phases?.length) return '';
+  const wide = e.phases.some((p) => p.label);
   // wiped 是 null 代表「通關」那一列
   const row = (label, count, wiped) => {
     const note = wiped === null ? `通關 ${count} 次` : `到達 ${label} ${count} 次，在這裡滅團 ${wiped} 次`;
     return `
       <div class="phase-row ${wiped === null ? 'kill' : ''}" title="${escapeHtml(note)}">
-        <span class="phase-label">${label}</span>
+        <span class="phase-label">${escapeHtml(label)}</span>
         <span class="phase-bar"><span style="width:${count ? Math.max(1, (count / e.pulls) * 100) : 0}%"></span></span>
         <span class="phase-num">${count} 次${wiped === null ? '' : `<span class="phase-wiped"> · 滅 ${wiped}</span>`}</span>
       </div>`;
   };
   return `
     <div class="sub-title">各階段到達次數</div>
-    <div class="phases">
-      ${e.phases.map((p) => row(`P${p.phase}`, p.reached, p.wiped)).join('')}
+    <div class="phases ${wide ? 'wide' : ''}">
+      ${e.phases.map((p) => row(p.label ?? `P${p.phase}`, p.reached, p.wiped)).join('')}
       ${row('通關', e.kills, null)}
     </div>`;
 }
@@ -515,7 +518,7 @@ function renderAnalyzePage(code, token) {
       <p class="hero-eyebrow">FFLOGS REPORT</p>
       <h1>團滅分析</h1>
       <div class="hero-divider">${CRYSTAL_ICON}</div>
-      <p class="hero-desc">貼上 FFLogs 的 report 網址，整理出每一場是怎麼滅的、誰先倒下、最常死在哪個機制。</p>
+      <p class="hero-desc">貼上 FFLogs 的 report 網址，整理出每一場打到哪裡、怎麼滅的，以及最常死在哪個機制。</p>
       <form class="analyze-form" id="analyze-form">
         <label class="search-field">
           ${LINK_ICON}
@@ -635,6 +638,7 @@ function bossView(code, boss) {
       <div class="stat"><b>${boss.deaths}</b><span>滅團時死亡人次</span></div>
     </div>
     <p class="note">最佳進度：${escapeHtml(progressLabel(boss.best))}</p>
+    ${boss.stages.length > 1 ? phaseChart({ phases: boss.stages, pulls: boss.pulls.length, kills: boss.kills }) : ''}
 
     ${boss.wipes ? `
       <h3 class="sub-title">最常造成團滅的機制</h3>
@@ -659,7 +663,7 @@ function mechanicTable(mechanics) {
         <tbody>
           ${rows.map((m, i) => `
             <tr>
-              <td><span class="phase-tag">P${m.phase}</span></td>
+              <td><span class="phase-tag">${escapeHtml(m.stage)}</span></td>
               <td class="strong">${escapeHtml(m.ability)}</td>
               <td class="num ${i === 0 && m.wipes ? 'hot' : ''}">${m.wipes} 次</td>
               <td class="num">${m.deaths}</td>
@@ -694,7 +698,7 @@ function pullCard(code, p) {
     lines.push([
       '團滅原因',
       p.cause
-        ? `<span class="phase-tag">P${p.cause.phase}</span> <b>${escapeHtml(p.cause.ability)}</b>` +
+        ? `<span class="phase-tag">${escapeHtml(p.cause.stage)}</span> <b>${escapeHtml(p.cause.ability)}</b>` +
           (p.cascade
             ? `<span class="phase-wiped">（${fmtClock(p.cascade.at)} 起 10 秒內倒下 ${p.cascade.deaths} 人）</span>`
             : `<span class="phase-wiped">（${fmtClock(firstAt)} 開始有人倒下）</span>`)
@@ -713,7 +717,7 @@ function pullCard(code, p) {
         <details>
           <summary>死亡順序（${p.deaths.length} 人）</summary>
           <ol class="death-order">
-            ${p.deaths.map((d) => `<li><span class="t">${fmtClock(d.at)}</span><span class="phase-tag">P${d.phase}</span> ${jobBadge(d.job)} ${escapeHtml(d.name)} — ${escapeHtml(d.ability)}</li>`).join('')}
+            ${p.deaths.map((d) => `<li><span class="t">${fmtClock(d.at)}</span><span class="phase-tag">${escapeHtml(d.stage)}</span> ${jobBadge(d.job)} ${escapeHtml(d.name)} — ${escapeHtml(d.ability)}</li>`).join('')}
           </ol>
         </details>` : ''}
       <div class="enc-actions">

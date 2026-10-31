@@ -15,6 +15,34 @@ function phaseAt(fight, t) {
   return phase;
 }
 
+const ORDINALS = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
+const ordinal = (n) => ORDINALS[n - 1] ?? String(n);
+
+// 迷宮類（例如異聞迷宮）整趟只算一個 encounter、沒有階段，改用 dungeonPulls 把每場拆成小怪和各隻王。
+// 回傳依時間排序的段落；一般副本回傳空陣列
+function dungeonSegments(fight) {
+  let bosses = 0;
+  return (fight.dungeonPulls ?? []).map((p) =>
+    p.encounterID
+      ? { start: p.startTime, label: `${ordinal(++bosses)}王 ${p.name}` }
+      : { start: p.startTime, label: `${ordinal(bosses + 1)}王前小怪` }
+  );
+}
+
+// 時間點 t 所在的階段名稱：迷宮用段落（還沒開打前算第一段），一般副本用 P1、P2…
+function stageAt(fight, segments, t) {
+  if (!segments.length) return `P${phaseAt(fight, t)}`;
+  let label = segments[0].label;
+  for (const s of segments) if (s.start <= t) label = s.label;
+  return label;
+}
+
+// 這場依序經過的階段（相鄰的同名段落合併）
+function stagesReached(fight, segments) {
+  if (!segments.length) return Array.from({ length: fight.lastPhase ?? 0 }, (_, i) => `P${i + 1}`);
+  return segments.map((s) => s.label).filter((label, i, all) => label !== all[i - 1]);
+}
+
 const CJK = /[㐀-鿿]/;
 
 // 致死技能：優先用 FFLogs 判定的最後一擊，沒有的話（例如死於持續傷害）用死前受到傷害最多的技能
@@ -30,16 +58,18 @@ export const NON_DAMAGE_DEATH = '非傷害致死';
 // 台服資料裡只有英文名稱的技能，用技能編號查中文名稱；本來就是中文的保留台服譯名
 function displayName(ability, names) {
   if (!ability?.name) return NON_DAMAGE_DEATH;
+  // 自動攻擊在國際服叫 attack、台服的紀錄裡是簡體的「攻击」
+  if (ability.name === 'attack' || ability.name === '攻击') return '自動攻擊';
   if (CJK.test(ability.name)) return ability.name;
   return names?.[ability.guid] ?? ability.name;
 }
 
-function toDeath(entry, fight, names) {
+function toDeath(entry, fight, segments, names) {
   return {
     name: entry.name,
     job: entry.type,
     at: entry.timestamp - fight.startTime,
-    phase: phaseAt(fight, entry.timestamp),
+    stage: stageAt(fight, segments, entry.timestamp),
     ability: displayName(killingAbility(entry), names),
   };
 }
@@ -60,33 +90,39 @@ function findCascade(deaths) {
       const counts = new Map();
       for (const d of wave) counts.set(d.ability, (counts.get(d.ability) ?? 0) + 1);
       const [ability] = [...counts].sort((a, b) => b[1] - a[1])[0];
-      return { at: deaths[i].at, phase: deaths[i].phase, ability, deaths: wave.length };
+      return { at: deaths[i].at, stage: deaths[i].stage, ability, deaths: wave.length };
     }
   }
   return null;
 }
 
-function summarizePull(fight, deaths) {
+function summarizePull(fight, segments, deaths) {
+  const stages = stagesReached(fight, segments);
   const first = deaths[0] ?? null;
   const cascade = fight.kill ? null : findCascade(deaths);
   // 團滅原因：有明顯的一波團滅就用那波的機制，否則用最早一筆死亡的致死機制
   const cause = fight.kill
     ? null
     : cascade
-      ? { phase: cascade.phase, ability: cascade.ability }
+      ? { stage: cascade.stage, ability: cascade.ability }
       : first
-        ? { phase: first.phase, ability: first.ability }
+        ? { stage: first.stage, ability: first.ability }
         : null;
   return {
     id: fight.id,
     kill: Boolean(fight.kill),
-    progress: {
-      kill: Boolean(fight.kill),
-      phase: fight.lastPhase,
-      intermission: fight.lastPhaseIsIntermission,
-      boss: fight.bossPercentage,
-      pct: fight.fightPercentage,
-    },
+    // 迷宮沒有階段和 Boss 血量（永遠是 100%），進度改用打到哪一段，depth 用來比較誰打得比較遠
+    progress: segments.length
+      ? { kill: Boolean(fight.kill), stage: stages.at(-1), depth: stages.length, pct: fight.fightPercentage }
+      : {
+          kill: Boolean(fight.kill),
+          phase: fight.lastPhase,
+          intermission: fight.lastPhaseIsIntermission,
+          boss: fight.bossPercentage,
+          pct: fight.fightPercentage,
+          depth: 0,
+        },
+    stages,
     duration: Math.round((fight.endTime - fight.startTime) / 1000),
     deaths,
     cascade,
@@ -96,14 +132,14 @@ function summarizePull(fight, deaths) {
 
 function rankMechanics(wipes) {
   const byKey = new Map();
-  const get = (phase, ability) => {
-    const key = `${phase}|${ability}`;
-    if (!byKey.has(key)) byKey.set(key, { phase, ability, wipes: 0, deaths: 0 });
+  const get = (stage, ability) => {
+    const key = `${stage}|${ability}`;
+    if (!byKey.has(key)) byKey.set(key, { stage, ability, wipes: 0, deaths: 0 });
     return byKey.get(key);
   };
   for (const pull of wipes) {
-    if (pull.cause) get(pull.cause.phase, pull.cause.ability).wipes++;
-    for (const d of pull.deaths) get(d.phase, d.ability).deaths++;
+    if (pull.cause) get(pull.cause.stage, pull.cause.ability).wipes++;
+    for (const d of pull.deaths) get(d.stage, d.ability).deaths++;
   }
   return [...byKey.values()].sort((a, b) => b.wipes - a.wipes || b.deaths - a.deaths);
 }
@@ -128,15 +164,17 @@ function rankPlayers(wipes) {
 
 // report 是 FFLogs reportData.report（含 fights 與 table）；names 是技能編號 → 中文名稱的對照表（可省略）
 export function analyzeReport(report, names) {
-  const fights = (report.fights ?? []).filter((f) => f.encounterID);
+  // 0 秒的場次是進副本後沒開打就重來，不算一場
+  const fights = (report.fights ?? []).filter((f) => f.encounterID && f.endTime > f.startTime);
   const deathsByFight = new Map(fights.map((f) => [f.id, []]));
   const fightById = new Map(fights.map((f) => [f.id, f]));
+  const segmentsByFight = new Map(fights.map((f) => [f.id, dungeonSegments(f)]));
   for (const entry of report.table?.data?.entries ?? []) {
     const fight = fightById.get(entry.fight);
-    if (fight) deathsByFight.get(fight.id).push(toDeath(entry, fight, names));
+    if (fight) deathsByFight.get(fight.id).push(toDeath(entry, fight, segmentsByFight.get(fight.id), names));
   }
   const pulls = fights.map((f) => ({
-    ...summarizePull(f, deathsByFight.get(f.id).sort((a, b) => a.at - b.at)),
+    ...summarizePull(f, segmentsByFight.get(f.id), deathsByFight.get(f.id).sort((a, b) => a.at - b.at)),
     encounterID: f.encounterID,
     bossName: f.name,
   }));
@@ -159,10 +197,8 @@ export function analyzeReport(report, names) {
 function summarizeBoss({ encounterID, name, pulls }) {
   // 排行只看滅團的場次，通關那場有人倒下不算團滅原因
   const wipes = pulls.filter((p) => !p.kill);
-  const best = pulls.reduce(
-    (b, p) => (!b || (p.kill && !b.kill) || (!b.kill && !p.kill && (p.progress.pct ?? 100) < (b.progress.pct ?? 100)) ? p : b),
-    null
-  );
+  const reach = (p) => (p.kill ? Infinity : p.progress.depth * 1000 + (100 - (p.progress.pct ?? 100)));
+  const best = pulls.reduce((b, p) => (!b || reach(p) > reach(b) ? p : b), null);
   return {
     encounterID,
     name,
@@ -171,9 +207,23 @@ function summarizeBoss({ encounterID, name, pulls }) {
     kills: pulls.length - wipes.length,
     deaths: wipes.reduce((sum, p) => sum + p.deaths.length, 0),
     best: best.progress,
+    stages: stageStats(pulls),
     mechanics: rankMechanics(wipes),
     players: rankPlayers(wipes),
   };
+}
+
+// 每個階段到達幾次、在那裡滅團幾次，照第一次出現的順序排
+function stageStats(pulls) {
+  const byLabel = new Map();
+  for (const pull of pulls) {
+    for (const label of pull.stages) {
+      if (!byLabel.has(label)) byLabel.set(label, { label, reached: 0, wiped: 0 });
+      byLabel.get(label).reached++;
+    }
+    if (!pull.kill && pull.stages.length) byLabel.get(pull.stages.at(-1)).wiped++;
+  }
+  return [...byLabel.values()];
 }
 
 // 從貼上的網址或代碼取出 report code

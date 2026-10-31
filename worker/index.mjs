@@ -207,6 +207,7 @@ const ANALYZE_QUERY = `query ($code: String) {
       fights(killType: Encounters, translate: false) {
         id encounterID name kill lastPhase lastPhaseIsIntermission bossPercentage fightPercentage
         startTime endTime phaseTransitions { id startTime }
+        dungeonPulls { name encounterID startTime }
       }
       table(dataType: Deaths, killType: Encounters, startTime: 0, endTime: 100000000000, translate: false)
     }

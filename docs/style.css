@@ -682,6 +682,14 @@ main.wrap {
   animation: grow 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   transform-origin: left;
 }
+.phases.wide .phase-row {
+  grid-template-columns: 128px 1fr auto;
+}
+.phases.wide .phase-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .phase-row.kill .phase-label {
   color: var(--gold-text);
 }
