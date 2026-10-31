@@ -24,7 +24,12 @@ function dungeonSegments(fight) {
   let bosses = 0;
   return (fight.dungeonPulls ?? []).map((p) =>
     p.encounterID
-      ? { start: p.startTime, label: `${ordinal(++bosses)}王 ${p.name}` }
+      ? {
+          start: p.startTime,
+          end: p.endTime,
+          label: `${ordinal(++bosses)}王 ${p.name}`,
+          boss: { encounterID: p.encounterID, kill: Boolean(p.kill), enemies: (p.enemyNPCs ?? []).map((e) => e.id) },
+        }
       : { start: p.startTime, label: `${ordinal(bosses + 1)}王前小怪` }
   );
 }
@@ -175,6 +180,17 @@ export function analyzeReport(report, names) {
   }
   const pulls = fights.map((f) => ({
     ...summarizePull(f, segmentsByFight.get(f.id), deathsByFight.get(f.id).sort((a, b) => a.at - b.at)),
+    // 迷宮裡每一次打到王：第幾場、什麼時候、有沒有打倒（血量另外查，見 applyBossHp）
+    attempts: segmentsByFight.get(f.id).filter((s) => s.boss).map((s) => ({
+      fight: f.id,
+      label: s.label,
+      start: s.start,
+      end: s.end,
+      at: s.start - f.startTime,
+      duration: Math.round((s.end - s.start) / 1000),
+      ...s.boss,
+      hp: s.boss.kill ? 0 : undefined,
+    })),
     encounterID: f.encounterID,
     bossName: f.name,
   }));
@@ -208,6 +224,7 @@ function summarizeBoss({ encounterID, name, pulls }) {
     deaths: wipes.reduce((sum, p) => sum + p.deaths.length, 0),
     best: best.progress,
     stages: stageStats(pulls),
+    dungeonBosses: dungeonBosses(pulls),
     mechanics: rankMechanics(wipes),
     players: rankPlayers(wipes),
   };
@@ -224,6 +241,50 @@ function stageStats(pulls) {
     if (!pull.kill && pull.stages.length) byLabel.get(pull.stages.at(-1)).wiped++;
   }
   return [...byLabel.values()];
+}
+
+// 迷宮裡每隻王的挑戰紀錄，依王出場的順序
+function dungeonBosses(pulls) {
+  const byLabel = new Map();
+  for (const attempt of pulls.flatMap((p) => p.attempts)) {
+    if (!byLabel.has(attempt.label)) byLabel.set(attempt.label, { label: attempt.label, attempts: [] });
+    byLabel.get(attempt.label).attempts.push(attempt);
+  }
+  return [...byLabel.values()];
+}
+
+// 打到這個血量以下但沒打倒，算「接近打倒」
+export const NEAR_KILL_HP = 10;
+
+// 還不知道血量的挑戰，拿去向 Worker 的 /boss-hp 查：「fight.開始.結束.敵人id-敵人id」
+export const bossHpSegment = (a) => `${a.fight}.${a.start}.${a.end}.${a.enemies.join('-')}`;
+export const pendingBossHp = (attempts) => attempts.filter((a) => a.hp === undefined && a.enemies.length);
+
+// body 是 /boss-hp 的回應，第 i 段對應 attempts[i]：取最後一筆打在王身上的事件的剩餘血量。
+// 敵人不只一隻時，血量上限最多的那隻當成王。查不到事件的維持 undefined
+export function applyBossHp(attempts, body) {
+  const report = body?.data?.reportData?.report ?? {};
+  attempts.forEach((attempt, i) => {
+    const events = (report[`s${i}`]?.data ?? []).filter(
+      (e) => attempt.enemies.includes(e.targetID) && e.targetResources?.maxHitPoints
+    );
+    if (!events.length) return;
+    const bossId = events.reduce((a, b) => (b.targetResources.maxHitPoints > a.targetResources.maxHitPoints ? b : a)).targetID;
+    const last = events.filter((e) => e.targetID === bossId).at(-1).targetResources;
+    attempt.hp = (last.hitPoints / last.maxHitPoints) * 100;
+  });
+}
+
+// 每隻王的摘要：挑戰幾次、打倒幾次、接近打倒幾次、最低血量
+export function summarizeDungeonBoss(boss) {
+  const wipes = boss.attempts.filter((a) => !a.kill);
+  const known = wipes.filter((a) => a.hp !== undefined);
+  return {
+    attempts: boss.attempts.length,
+    kills: boss.attempts.length - wipes.length,
+    near: known.filter((a) => a.hp <= NEAR_KILL_HP).length,
+    bestHp: known.length ? Math.min(...known.map((a) => a.hp)) : null,
+  };
 }
 
 // 從貼上的網址或代碼取出 report code

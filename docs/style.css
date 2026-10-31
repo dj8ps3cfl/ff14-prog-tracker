@@ -1216,3 +1216,52 @@ main.wrap {
     padding-right: 4px;
   }
 }
+
+/* 迷宮各王挑戰紀錄 */
+.dboss-list {
+  display: grid;
+  gap: 12px;
+}
+.dboss {
+  padding: 16px 18px;
+}
+.dboss-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dboss-head h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+.attempt-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 56px;
+  margin: 14px 0 8px;
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.attempt-strip > span {
+  flex: 1;
+  min-width: 3px;
+  max-width: 16px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(180deg, var(--crystal), color-mix(in srgb, var(--crystal) 45%, transparent));
+}
+.attempt-strip > span.kill {
+  background: linear-gradient(180deg, var(--gold), color-mix(in srgb, var(--gold) 45%, transparent));
+}
+.attempt-strip > span.unknown {
+  height: 4px !important;
+  background: var(--border-strong);
+}
+.dboss details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}

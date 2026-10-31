@@ -207,7 +207,7 @@ const ANALYZE_QUERY = `query ($code: String) {
       fights(killType: Encounters, translate: false) {
         id encounterID name kill lastPhase lastPhaseIsIntermission bossPercentage fightPercentage
         startTime endTime phaseTransitions { id startTime }
-        dungeonPulls { name encounterID startTime }
+        dungeonPulls { name encounterID startTime endTime kill enemyNPCs { id } }
       }
       table(dataType: Deaths, killType: Encounters, startTime: 0, endTime: 100000000000, translate: false)
     }
@@ -241,8 +241,8 @@ async function fflogsRequest(env, query, variables = {}) {
   });
 }
 
-async function analyze(db, params, env) {
-  const code = params.get('code') ?? '';
+// 檢查參數和 FFLogs 額度，有問題時回傳錯誤回應
+async function analyzeGuard(code, env) {
   if (!REPORT_CODE.test(code)) return json({ error: 'report 代碼格式不對，應該是 16 個英數字' }, 400);
   if (!env.FFLOGS_CLIENT_ID || !env.FFLOGS_CLIENT_SECRET) return json({ error: '伺服器還沒設定 FFLogs 金鑰' }, 500);
 
@@ -251,10 +251,12 @@ async function analyze(db, params, env) {
   if (pointsSpentThisHour > ANALYZE_POINTS_CEILING) {
     return json({ error: `FFLogs 這個小時的查詢額度快用完了，請 ${Math.ceil(pointsResetIn / 60)} 分鐘後再試` }, 429);
   }
+  return null;
+}
 
-  const res = await fflogsRequest(env, ANALYZE_QUERY, { code });
+// 不解析，直接轉送；report 不存在或是 private 時，網頁會從回應內容判斷
+function forward(res) {
   if (!res.ok) return json({ error: `FFLogs 回應錯誤：HTTP ${res.status}` }, 502);
-  // 不解析，直接轉送；report 不存在或是 private 時，網頁會從回應內容判斷
   return new Response(res.body, {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
@@ -264,8 +266,44 @@ async function analyze(db, params, env) {
   });
 }
 
+async function analyze(db, params, env) {
+  const code = params.get('code') ?? '';
+  const refused = await analyzeGuard(code, env);
+  if (refused) return refused;
+  return forward(await fflogsRequest(env, ANALYZE_QUERY, { code }));
+}
+
+// 迷宮的 dungeonPulls 沒有 Boss 血量，改看每次挑戰結束前幾秒（w，預設 10 秒）打在王身上的傷害事件，
+// 事件裡的 targetResources 有當下的血量。全滅前有一段時間沒人打王的話，網頁會用較長的 w 再查一次
+const BOSS_HP_WINDOW_S = { default: 10, max: 120 };
+const BOSS_HP_MAX_SEGMENTS = 80;
+// 一段是「fight.開始.結束.敵人id-敵人id」
+const BOSS_SEGMENT = /^(\d{1,4})\.(\d{1,12})\.(\d{1,12})\.(\d{1,6}(?:-\d{1,6}){0,7})$/;
+
+async function bossHp(db, params, env) {
+  const code = params.get('code') ?? '';
+  const segments = (params.get('s') ?? '').split(',').map((s) => s.match(BOSS_SEGMENT));
+  if (!segments.length || segments.length > BOSS_HP_MAX_SEGMENTS || segments.some((m) => !m)) {
+    return json({ error: '挑戰清單格式不對' }, 400);
+  }
+  const windowMs = Math.min(Number(params.get('w')) || BOSS_HP_WINDOW_S.default, BOSS_HP_WINDOW_S.max) * 1000;
+  const refused = await analyzeGuard(code, env);
+  if (refused) return refused;
+
+  const fields = segments.map(([, fight, start, end, enemies], i) => {
+    const from = Math.max(Number(start), Number(end) - windowMs);
+    // filterExpression 篩不到敵人 id，只有一個敵人時用 targetID，有好幾個就全抓回去讓網頁挑血量最多的那隻
+    const ids = enemies.split('-');
+    const target = ids.length === 1 ? `, targetID: ${ids[0]}` : '';
+    return `s${i}: events(fightIDs: [${fight}], startTime: ${from}, endTime: ${end}, dataType: DamageDone, hostilityType: Friendlies${target}, includeResources: true, limit: 1000) { data }`;
+  });
+  const query = `query ($code: String) { reportData { report(code: $code) { ${fields.join(' ')} } } }`;
+  return forward(await fflogsRequest(env, query, { code }));
+}
+
 const ROUTES = {
   '/analyze': analyze,
+  '/boss-hp': bossHp,
   '/encounters': async () => json({ encounters: ENCOUNTERS }),
   '/search': search,
   '/player': player,

@@ -1,6 +1,16 @@
 // 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
 // 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
-import { NON_DAMAGE_DEATH, analyzeReport, hasUntranslatedAbilities, parseReportCode } from './analysis.js';
+import {
+  NEAR_KILL_HP,
+  NON_DAMAGE_DEATH,
+  analyzeReport,
+  applyBossHp,
+  bossHpSegment,
+  hasUntranslatedAbilities,
+  parseReportCode,
+  pendingBossHp,
+  summarizeDungeonBoss,
+} from './analysis.js';
 
 const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 const API_BASE = LOCAL ? 'http://127.0.0.1:8811' : 'https://ff14-prog-api.dj8ps3cfl.workers.dev';
@@ -582,9 +592,13 @@ async function runAnalysis(code, token) {
 
   // 好幾隻王時用分頁切換，預設顯示打最多場的那隻
   const bosses = result.bosses;
+  const attempts = bosses.flatMap((b) => b.dungeonBosses.flatMap((d) => d.attempts));
+  let hpState = pendingBossHp(attempts).length ? 'loading' : 'done';
+  let current;
   const show = (encounterID) => {
+    current = encounterID;
     const boss = bosses.find((b) => b.encounterID === encounterID);
-    box.querySelector('#boss-view').innerHTML = bossView(report.code, boss);
+    box.querySelector('#boss-view').innerHTML = bossView(report.code, boss, hpState);
     box.querySelectorAll('[data-boss]').forEach((tab) => {
       const selected = Number(tab.dataset.boss) === encounterID;
       tab.classList.toggle('active', selected);
@@ -593,6 +607,84 @@ async function runAnalysis(code, token) {
   };
   box.querySelectorAll('[data-boss]').forEach((tab) => tab.addEventListener('click', () => show(Number(tab.dataset.boss))));
   show(bosses.reduce((a, b) => (b.pulls.length > a.pulls.length ? b : a)).encounterID);
+
+  // 迷宮各王的血量另外查，查完只重畫挑戰紀錄那一塊（保留展開的明細）
+  if (hpState === 'loading') {
+    hpState = await loadBossHp(report.code, attempts).then(() => 'done', () => 'error');
+    const section = box.querySelector('#dungeon-bosses');
+    if (token !== renderToken || !section) return;
+    const open = [...section.querySelectorAll('details')].map((d) => d.open);
+    section.innerHTML = dungeonBossCards(report.code, bosses.find((b) => b.encounterID === current), hpState);
+    section.querySelectorAll('details').forEach((d, i) => (d.open = open[i]));
+  }
+}
+
+// 先查每次挑戰結束前 10 秒，結束前一段時間沒人打王（例如人都倒了）的再用 60 秒查一次
+const BOSS_HP_BATCH = 80;
+async function loadBossHp(code, attempts) {
+  for (const seconds of [10, 60]) {
+    const pending = pendingBossHp(attempts);
+    for (let i = 0; i < pending.length; i += BOSS_HP_BATCH) {
+      const batch = pending.slice(i, i + BOSS_HP_BATCH);
+      applyBossHp(batch, await api(`/boss-hp?code=${code}&w=${seconds}&s=${batch.map(bossHpSegment).join(',')}`));
+    }
+  }
+}
+
+function attemptResult(a, hpState) {
+  if (a.kill) return '擊倒';
+  if (a.hp !== undefined) return `剩 ${fmtPct(a.hp)}`;
+  return hpState === 'loading' ? '查詢中…' : '—';
+}
+
+// 迷宮裡每隻王：挑戰次數、擊倒、接近擊倒、每一次打到剩多少
+function dungeonBossCards(code, boss, hpState) {
+  return boss.dungeonBosses
+    .map((d) => {
+      const s = summarizeDungeonBoss(d);
+      const bars = d.attempts
+        .map((a) => {
+          const height = a.kill ? 100 : a.hp === undefined ? 0 : Math.max(3, 100 - a.hp);
+          const cls = a.kill ? 'kill' : a.hp === undefined ? 'unknown' : '';
+          return `<span class="${cls}" style="height:${height}%" title="#${a.fight}：${attemptResult(a, hpState)}"></span>`;
+        })
+        .join('');
+      return `
+        <div class="card dboss">
+          <div class="dboss-head">
+            <h4>${escapeHtml(d.label)}</h4>
+            <span class="status ${s.kills ? 'kill' : ''}">${
+              s.kills ? `${CHECK_ICON}擊倒 ${s.kills} 次` : s.bestHp !== null ? `最低剩 ${fmtPct(s.bestHp)}` : '未擊倒'
+            }</span>
+          </div>
+          <div class="player-stats boss-stats">
+            <div class="stat"><b>${s.attempts}</b><span>挑戰</span></div>
+            <div class="stat"><b>${s.kills}</b><span>擊倒</span></div>
+            <div class="stat"><b>${s.near}</b><span>剩 ${NEAR_KILL_HP}% 以下</span></div>
+            <div class="stat"><b>${s.bestHp === null ? '—' : fmtPct(s.bestHp)}</b><span>滅團時最低血量</span></div>
+          </div>
+          <div class="attempt-strip" role="img" aria-label="每次挑戰打掉的血量，金色是擊倒">${bars}</div>
+          <details>
+            <summary>每一次挑戰（${s.attempts} 次）</summary>
+            <div class="table-wrap">
+              <table class="pull-table">
+                <thead><tr><th>場次</th><th>開打</th><th>結果</th><th class="num">打了</th><th class="num"></th></tr></thead>
+                <tbody>
+                  ${d.attempts.map((a) => `
+                    <tr>
+                      <td>#${a.fight}</td>
+                      <td>${fmtClock(a.at)}</td>
+                      <td class="result-cell ${a.kill ? 'kill' : ''}">${attemptResult(a, hpState)}</td>
+                      <td class="num">${fmtDuration(a.duration)}</td>
+                      <td class="num"><a href="${escapeHtml(fightUrl(code, a.fight))}" target="_blank" rel="noopener">紀錄 ↗</a></td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        </div>`;
+    })
+    .join('');
 }
 
 // 有對到我們追蹤的副本就用中文名稱（例如 M8S 呼嘯之劍），否則用 FFLogs 的名稱
@@ -628,7 +720,7 @@ function analysisView(report, result) {
     <div id="boss-view"></div>`;
 }
 
-function bossView(code, boss) {
+function bossView(code, boss, hpState) {
   return `
     <h2 class="section-title">${escapeHtml(bossLabel(boss))}</h2>
     <div class="player-stats boss-stats">
@@ -639,6 +731,13 @@ function bossView(code, boss) {
     </div>
     <p class="note">最佳進度：${escapeHtml(progressLabel(boss.best))}</p>
     ${boss.stages.length > 1 ? phaseChart({ phases: boss.stages, pulls: boss.pulls.length, kills: boss.kills }) : ''}
+
+    ${boss.dungeonBosses.length ? `
+      <h3 class="sub-title">各王挑戰紀錄</h3>
+      <div id="dungeon-bosses" class="dboss-list">${dungeonBossCards(code, boss, hpState)}</div>
+      ${hpState === 'error' ? '<p class="note">血量查詢失敗，只顯示有沒有擊倒。</p>' : ''}
+      <p class="note">血量是每次挑戰結束前最後一下打在王身上時的剩餘血量；結束前一分鐘都沒人打到王的，查不到血量。</p>
+    ` : ''}
 
     ${boss.wipes ? `
       <h3 class="sub-title">最常造成團滅的機制</h3>
