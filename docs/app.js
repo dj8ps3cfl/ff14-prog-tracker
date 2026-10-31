@@ -1,6 +1,7 @@
 // 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
 // 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
 import {
+  CN_NAME_MARK,
   NON_DAMAGE_DEATH,
   analyzeReport,
   applyBossHp,
@@ -515,7 +516,8 @@ const reportUrl = (code) => `https://www.fflogs.com/reports/${code}`;
 // 技能編號 → 中文名稱的對照表（約 300KB），只有分析結果裡有英文技能名稱時才載入，載入一次就重複使用
 let actionNames = null;
 function loadActionNames() {
-  actionNames ??= fetch('data/action-names.json')
+  // ?v= 在對照表格式改變時換掉，避免瀏覽器用到舊格式的快取
+  actionNames ??= fetch('data/action-names.json?v=2')
     .then((res) => (res.ok ? res.json() : null))
     .catch(() => null);
   return actionNames;
@@ -782,6 +784,8 @@ function bossView(code, boss, hpState) {
       <h3 class="sub-title">個人死亡統計</h3>
       ${playerTable(boss.players)}
       <p class="note">排行只計算滅團的場次。死亡次數多不代表失誤（例如坦克沒減傷、補師沒補到、被隊友的機制連帶），請搭配 FFLogs 的死亡紀錄判斷。</p>
+      ${boss.mechanics.some((m) => m.ability.endsWith(CN_NAME_MARK)) ? `
+        <p class="note">名稱後面有「${CN_NAME_MARK}」的是國服譯名：繁中服的遊戲資料裡還查不到這個技能的官方譯名（新副本常見），遊戲裡的名稱可能不一樣。</p>` : ''}
       ${boss.mechanics.some((m) => m.ability === NON_DAMAGE_DEATH) ? `
         <p class="note">「${NON_DAMAGE_DEATH}」是死前完全沒有受到傷害的死亡，常見的是被擊退或吹出場外、即死類的負面狀態，或暗黑騎士的行屍走肉結束時沒被補滿。</p>` : ''}
     ` : ''}

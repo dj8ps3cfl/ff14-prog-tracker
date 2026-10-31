@@ -81,13 +81,20 @@ function killingAbility(entry) {
 // 死前完全沒有傷害紀錄的死亡：被擊退或吹出場外、即死類的負面狀態、暗黑騎士行屍走肉結束等
 export const NON_DAMAGE_DEATH = '非傷害致死';
 
-// 台服資料裡只有英文名稱的技能，用技能編號查中文名稱；本來就是中文的保留台服譯名
+// 名稱是國服譯名（繁中服資料查不到）時加在名稱後面的記號
+export const CN_NAME_MARK = '※';
+
+// 台服資料裡只有英文名稱的技能，用技能編號查中文名稱：先查繁中服官方譯名，再查國服譯名（加上記號）。
+// 本來就是中文的保留台服紀錄裡的名稱
 function displayName(ability, names) {
   if (!ability?.name) return NON_DAMAGE_DEATH;
   // 自動攻擊在國際服叫 attack、台服的紀錄裡是簡體的「攻击」
   if (ability.name === 'attack' || ability.name === '攻击') return '自動攻擊';
   if (CJK.test(ability.name)) return ability.name;
-  return names?.[ability.guid] ?? ability.name;
+  const tc = names?.tc?.[ability.guid];
+  if (tc) return tc;
+  const cn = names?.cn?.[ability.guid];
+  return cn ? `${cn}${CN_NAME_MARK}` : ability.name;
 }
 
 function toDeath(entry, fight, segments, names) {
