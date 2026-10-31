@@ -253,9 +253,6 @@ function dungeonBosses(pulls) {
   return [...byLabel.values()];
 }
 
-// 打到這個血量以下但沒打倒，算「接近打倒」
-export const NEAR_KILL_HP = 10;
-
 // 還不知道血量的挑戰，拿去向 Worker 的 /boss-hp 查：「fight.開始.結束.敵人id-敵人id」
 export const bossHpSegment = (a) => `${a.fight}.${a.start}.${a.end}.${a.enemies.join('-')}`;
 export const pendingBossHp = (attempts) => attempts.filter((a) => a.hp === undefined && a.enemies.length);
@@ -275,14 +272,18 @@ export function applyBossHp(attempts, body) {
   });
 }
 
-// 每隻王的摘要：挑戰幾次、打倒幾次、接近打倒幾次、最低血量
-export function summarizeDungeonBoss(boss) {
+// 沒打倒但剩不到 threshold% 的挑戰，也當成擊倒（門檻由使用者自己填，0 代表只算真的打倒）
+export const countsAsKill = (a, threshold) => a.kill || (threshold > 0 && a.hp !== undefined && a.hp <= threshold);
+
+// 每隻王的摘要：挑戰幾次、打倒幾次（其中幾次是靠門檻算的）、滅團時最低血量
+export function summarizeDungeonBoss(boss, threshold = 0) {
   const wipes = boss.attempts.filter((a) => !a.kill);
   const known = wipes.filter((a) => a.hp !== undefined);
+  const nearKills = wipes.filter((a) => countsAsKill(a, threshold)).length;
   return {
     attempts: boss.attempts.length,
-    kills: boss.attempts.length - wipes.length,
-    near: known.filter((a) => a.hp <= NEAR_KILL_HP).length,
+    kills: boss.attempts.length - wipes.length + nearKills,
+    nearKills,
     bestHp: known.length ? Math.min(...known.map((a) => a.hp)) : null,
   };
 }

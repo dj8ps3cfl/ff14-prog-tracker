@@ -1256,6 +1256,9 @@ main.wrap {
 .attempt-strip > span.kill {
   background: linear-gradient(180deg, var(--gold), color-mix(in srgb, var(--gold) 45%, transparent));
 }
+.attempt-strip > span.near {
+  opacity: 0.6;
+}
 .attempt-strip > span.unknown {
   height: 4px !important;
   background: var(--border-strong);
@@ -1264,4 +1267,27 @@ main.wrap {
   cursor: pointer;
   font-size: 13px;
   color: var(--muted);
+}
+.dboss-threshold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.dboss-threshold input {
+  width: 64px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 16px;
+  color: var(--text);
+  text-align: right;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+.dboss-threshold input:focus {
+  outline: 2px solid var(--crystal);
+  outline-offset: 1px;
 }

@@ -1,11 +1,11 @@
 // 開荒進度網頁：搜尋角色、角色頁（各副本進度、開荒曲線、每一場 pull）、團滅分析
 // 網址格式：#/ 首頁，#/p/<伺服器>/<角色名> 角色頁，#/analyze[/<report code>] 團滅分析
 import {
-  NEAR_KILL_HP,
   NON_DAMAGE_DEATH,
   analyzeReport,
   applyBossHp,
   bossHpSegment,
+  countsAsKill,
   hasUntranslatedAbilities,
   parseReportCode,
   pendingBossHp,
@@ -599,6 +599,8 @@ async function runAnalysis(code, token) {
     current = encounterID;
     const boss = bosses.find((b) => b.encounterID === encounterID);
     box.querySelector('#boss-view').innerHTML = bossView(report.code, boss, hpState);
+    const section = box.querySelector('#dungeon-bosses');
+    if (section) fillDungeonBossCards(section, boss, hpState);
     box.querySelectorAll('[data-boss]').forEach((tab) => {
       const selected = Number(tab.dataset.boss) === encounterID;
       tab.classList.toggle('active', selected);
@@ -606,16 +608,25 @@ async function runAnalysis(code, token) {
     });
   };
   box.querySelectorAll('[data-boss]').forEach((tab) => tab.addEventListener('click', () => show(Number(tab.dataset.boss))));
+
+  // 改「剩 X% 以下算擊倒」時，只重畫那隻王的統計，不動輸入框
+  box.addEventListener('input', (event) => {
+    const input = event.target.closest('.dboss-threshold input');
+    if (!input) return;
+    const card = input.closest('.dboss');
+    const d = bosses.find((b) => b.encounterID === current).dungeonBosses[Number(card.dataset.index)];
+    const value = Number(input.value);
+    setKillThreshold(d.label, Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0);
+    fillDungeonBossCard(card, d, hpState);
+  });
   show(bosses.reduce((a, b) => (b.pulls.length > a.pulls.length ? b : a)).encounterID);
 
-  // 迷宮各王的血量另外查，查完只重畫挑戰紀錄那一塊（保留展開的明細）
+  // 迷宮各王的血量另外查，查完只重填統計和明細（保留輸入框和展開的明細）
   if (hpState === 'loading') {
     hpState = await loadBossHp(report.code, attempts).then(() => 'done', () => 'error');
     const section = box.querySelector('#dungeon-bosses');
     if (token !== renderToken || !section) return;
-    const open = [...section.querySelectorAll('details')].map((d) => d.open);
-    section.innerHTML = dungeonBossCards(report.code, bosses.find((b) => b.encounterID === current), hpState);
-    section.querySelectorAll('details').forEach((d, i) => (d.open = open[i]));
+    fillDungeonBossCards(section, bosses.find((b) => b.encounterID === current), hpState);
   }
 }
 
@@ -631,63 +642,89 @@ async function loadBossHp(code, attempts) {
   }
 }
 
-function attemptResult(a, hpState) {
+// 每隻王「剩 X% 以下算擊倒」的門檻，依王的名稱記在這個瀏覽器裡
+const KILL_THRESHOLD_KEY = 'dungeonKillThresholds';
+let killThresholds = {};
+try {
+  killThresholds = JSON.parse(localStorage.getItem(KILL_THRESHOLD_KEY)) ?? {};
+} catch {}
+const killThreshold = (label) => killThresholds[label] ?? 0;
+function setKillThreshold(label, value) {
+  killThresholds = { ...killThresholds, [label]: value };
+  try {
+    localStorage.setItem(KILL_THRESHOLD_KEY, JSON.stringify(killThresholds));
+  } catch {}
+}
+
+function attemptResult(a, hpState, threshold) {
   if (a.kill) return '擊倒';
-  if (a.hp !== undefined) return `剩 ${fmtPct(a.hp)}`;
+  if (a.hp !== undefined) return `剩 ${fmtPct(a.hp)}${countsAsKill(a, threshold) ? '（算擊倒）' : ''}`;
   return hpState === 'loading' ? '查詢中…' : '—';
 }
 
-// 迷宮裡每隻王：挑戰次數、擊倒、接近擊倒、每一次打到剩多少
-function dungeonBossCards(code, boss, hpState) {
+// 迷宮裡每隻王一張卡片：門檻輸入框固定，統計、長條、明細由 fillDungeonBossCard 填（改門檻時只重畫這些）
+function dungeonBossCards(code, boss) {
   return boss.dungeonBosses
-    .map((d) => {
-      const s = summarizeDungeonBoss(d);
-      const bars = d.attempts
-        .map((a) => {
-          const height = a.kill ? 100 : a.hp === undefined ? 0 : Math.max(3, 100 - a.hp);
-          const cls = a.kill ? 'kill' : a.hp === undefined ? 'unknown' : '';
-          return `<span class="${cls}" style="height:${height}%" title="#${a.fight}：${attemptResult(a, hpState)}"></span>`;
-        })
-        .join('');
-      return `
-        <div class="card dboss">
-          <div class="dboss-head">
-            <h4>${escapeHtml(d.label)}</h4>
-            <span class="status ${s.kills ? 'kill' : ''}">${
-              s.kills ? `${CHECK_ICON}擊倒 ${s.kills} 次` : s.bestHp !== null ? `最低剩 ${fmtPct(s.bestHp)}` : '未擊倒'
-            }</span>
+    .map((d, i) => `
+      <div class="card dboss" data-index="${i}">
+        <div class="dboss-head">
+          <h4>${escapeHtml(d.label)}</h4>
+          <span class="dboss-status"></span>
+        </div>
+        <label class="dboss-threshold">剩
+          <input type="number" min="0" max="100" step="0.1" inputmode="decimal" value="${killThreshold(d.label) || ''}" placeholder="0" aria-label="${escapeHtml(d.label)} 剩多少 % 以下算擊倒">
+          % 以下也算擊倒
+        </label>
+        <div class="player-stats boss-stats"></div>
+        <div class="attempt-strip" role="img" aria-label="每次挑戰打掉的血量，金色是擊倒"></div>
+        <details>
+          <summary>每一次挑戰（${d.attempts.length} 次）</summary>
+          <div class="table-wrap">
+            <table class="pull-table">
+              <thead><tr><th>場次</th><th>開打</th><th>結果</th><th class="num">打了</th><th class="num"></th></tr></thead>
+              <tbody data-code="${escapeHtml(code)}"></tbody>
+            </table>
           </div>
-          <div class="player-stats boss-stats">
-            <div class="stat"><b>${s.attempts}</b><span>挑戰</span></div>
-            <div class="stat"><b>${s.kills}</b><span>擊倒</span></div>
-            <div class="stat"><b>${s.near}</b><span>剩 ${NEAR_KILL_HP}% 以下</span></div>
-            <div class="stat"><b>${s.bestHp === null ? '—' : fmtPct(s.bestHp)}</b><span>滅團時最低血量</span></div>
-          </div>
-          <div class="attempt-strip" role="img" aria-label="每次挑戰打掉的血量，金色是擊倒">${bars}</div>
-          <details>
-            <summary>每一次挑戰（${s.attempts} 次）</summary>
-            <div class="table-wrap">
-              <table class="pull-table">
-                <thead><tr><th>場次</th><th>開打</th><th>結果</th><th class="num">打了</th><th class="num"></th></tr></thead>
-                <tbody>
-                  ${d.attempts.map((a) => `
-                    <tr>
-                      <td>#${a.fight}</td>
-                      <td>${fmtClock(a.at)}</td>
-                      <td class="result-cell ${a.kill ? 'kill' : ''}">${attemptResult(a, hpState)}</td>
-                      <td class="num">${fmtDuration(a.duration)}</td>
-                      <td class="num"><a href="${escapeHtml(fightUrl(code, a.fight))}" target="_blank" rel="noopener">紀錄 ↗</a></td>
-                    </tr>`).join('')}
-                </tbody>
-              </table>
-            </div>
-          </details>
-        </div>`;
-    })
+        </details>
+      </div>`)
     .join('');
 }
 
-// 有對到我們追蹤的副本就用中文名稱（例如 M8S 呼嘯之劍），否則用 FFLogs 的名稱
+function fillDungeonBossCard(card, d, hpState) {
+  const threshold = killThreshold(d.label);
+  const s = summarizeDungeonBoss(d, threshold);
+  const code = card.querySelector('tbody').dataset.code;
+  const status = card.querySelector('.dboss-status');
+  status.className = `dboss-status status ${s.kills ? 'kill' : ''}`;
+  status.innerHTML = s.kills ? `${CHECK_ICON}擊倒 ${s.kills} 次` : s.bestHp !== null ? `最低剩 ${fmtPct(s.bestHp)}` : '未擊倒';
+  card.querySelector('.boss-stats').innerHTML = `
+    <div class="stat"><b>${s.attempts}</b><span>挑戰</span></div>
+    <div class="stat"><b>${s.kills}</b><span>擊倒${s.nearKills ? `（含 ${s.nearKills} 次未打完）` : ''}</span></div>
+    <div class="stat"><b>${s.attempts ? Math.round((s.kills / s.attempts) * 100) : 0}%</b><span>擊倒率</span></div>
+    <div class="stat"><b>${s.bestHp === null ? '—' : fmtPct(s.bestHp)}</b><span>滅團時最低血量</span></div>`;
+  card.querySelector('.attempt-strip').innerHTML = d.attempts
+    .map((a) => {
+      const height = a.kill ? 100 : a.hp === undefined ? 0 : Math.max(3, 100 - a.hp);
+      const cls = countsAsKill(a, threshold) ? `kill${a.kill ? '' : ' near'}` : a.hp === undefined ? 'unknown' : '';
+      return `<span class="${cls}" style="height:${height}%" title="#${a.fight}：${attemptResult(a, hpState, threshold)}"></span>`;
+    })
+    .join('');
+  card.querySelector('tbody').innerHTML = d.attempts
+    .map((a) => `
+      <tr>
+        <td>#${a.fight}</td>
+        <td>${fmtClock(a.at)}</td>
+        <td class="result-cell ${countsAsKill(a, threshold) ? 'kill' : ''}">${attemptResult(a, hpState, threshold)}</td>
+        <td class="num">${fmtDuration(a.duration)}</td>
+        <td class="num"><a href="${escapeHtml(fightUrl(code, a.fight))}" target="_blank" rel="noopener">紀錄 ↗</a></td>
+      </tr>`)
+    .join('');
+}
+
+function fillDungeonBossCards(section, boss, hpState) {
+  section.querySelectorAll('.dboss').forEach((card) => fillDungeonBossCard(card, boss.dungeonBosses[Number(card.dataset.index)], hpState));
+}
+
 const bossLabel = (boss) => encounters.find((e) => e.id === boss.encounterID)?.name ?? boss.name;
 
 function analysisView(report, result) {
@@ -734,7 +771,7 @@ function bossView(code, boss, hpState) {
 
     ${boss.dungeonBosses.length ? `
       <h3 class="sub-title">各王挑戰紀錄</h3>
-      <div id="dungeon-bosses" class="dboss-list">${dungeonBossCards(code, boss, hpState)}</div>
+      <div id="dungeon-bosses" class="dboss-list">${dungeonBossCards(code, boss)}</div>
       ${hpState === 'error' ? '<p class="note">血量查詢失敗，只顯示有沒有擊倒。</p>' : ''}
       <p class="note">血量是每次挑戰結束前最後一下打在王身上時的剩餘血量；結束前一分鐘都沒人打到王的，查不到血量。</p>
     ` : ''}
